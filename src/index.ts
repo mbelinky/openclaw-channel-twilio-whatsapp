@@ -1,6 +1,5 @@
 import { defineChannelPluginEntry } from 'openclaw/plugin-sdk/channel-core';
 import { twilioWhatsAppPlugin } from './channel.js';
-import { twilioWhatsAppMessageAdapter } from './message.js';
 import { setTwilioWhatsAppRuntime } from './runtime.js';
 
 export default defineChannelPluginEntry({
@@ -8,6 +7,5 @@ export default defineChannelPluginEntry({
   name: 'Twilio WhatsApp',
   description: 'WhatsApp channel via Twilio Business API',
   plugin: twilioWhatsAppPlugin,
-  messageAdapter: twilioWhatsAppMessageAdapter,
   setRuntime: setTwilioWhatsAppRuntime,
 });

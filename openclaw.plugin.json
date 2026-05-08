@@ -3,7 +3,7 @@
   "kind": "channel",
   "name": "Twilio WhatsApp Channel",
   "description": "WhatsApp channel via Twilio Business API",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "channels": ["twilio-whatsapp"],
   "channelEnvVars": {
     "twilio-whatsapp": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]
