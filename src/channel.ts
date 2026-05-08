@@ -4,16 +4,13 @@ import path from 'path';
 import twilio from 'twilio';
 import { createChatChannelPlugin } from 'openclaw/plugin-sdk/channel-core';
 import { createRestrictSendersChannelSecurity } from 'openclaw/plugin-sdk/channel-policy';
-import { createAttachedChannelResultAdapter } from 'openclaw/plugin-sdk/channel-send-result';
-import { chunkText } from 'openclaw/plugin-sdk/reply-chunking';
 import { registerPluginHttpRoute } from 'openclaw/plugin-sdk/webhook-ingress';
 import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound';
+import { shouldComputeCommandAuthorized } from 'openclaw/plugin-sdk/command-auth';
 import { getTwilioWhatsAppRuntime } from './runtime.js';
 import { toWhatsAppId, fromWhatsAppId } from './util.js';
-import { stageMedia, createMediaServeHandler } from './media.js';
+import { createMediaServeHandler } from './media.js';
 import { createWebhookHandler, createHealthHandler, type InboundMessage } from './webhook.js';
-
-const TWILIO_MAX_MESSAGE_LEN = 1600;
 
 interface TwilioWhatsAppConfig {
   enabled: boolean;
@@ -140,7 +137,18 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
             return { messageId: result.sid };
           };
 
-          await dispatchInboundDirectDmWithRuntime({
+          // The webhook layer (webhook.ts) and createRestrictSendersChannelSecurity
+          // have already authorized this sender. shouldComputeCommandAuthorized
+          // detects /cmd, !cmd, and inline command tokens; when true we mark the
+          // sender as authorized so the host's auto-reply pipeline runs the command.
+          const isCommand = shouldComputeCommandAuthorized(msg.text, ctx.cfg);
+          ctx.log?.debug?.(
+            `[twilio-whatsapp] inbound from=${msg.senderId} ` +
+              `len=${msg.text.length} isCommand=${isCommand} ` +
+              `messageSid=${msg.messageSid}`,
+          );
+
+          const result = await dispatchInboundDirectDmWithRuntime({
             cfg: ctx.cfg,
             channel: 'twilio-whatsapp',
             accountId: account.accountId,
@@ -149,6 +157,7 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
             channelLabel: 'Twilio WhatsApp',
             conversationLabel: msg.senderName || msg.senderId,
             rawBody: msg.text,
+            commandAuthorized: isCommand ? true : undefined,
             senderAddress: msg.senderId,
             recipientAddress: toWhatsAppId(fromNumber),
             originatingTo: toWhatsAppId(msg.senderId),
@@ -163,6 +172,12 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
               return {};
             },
           });
+
+          ctx.log?.debug?.(
+            `[twilio-whatsapp] dispatched messageSid=${msg.messageSid} ` +
+              `route.agentId=${result?.route?.agentId} ` +
+              `route.sessionKey=${result?.route?.sessionKey}`,
+          );
         };
 
         const unregisterWebhook = registerPluginHttpRoute({
@@ -216,61 +231,6 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         'No markdown headers, links, or HTML. Use • for bullet points.',
         'Keep responses concise — messages over 1600 characters are split.',
       ],
-    },
-  },
-  outbound: {
-    deliveryMode: 'gateway',
-    textChunkLimit: TWILIO_MAX_MESSAGE_LEN,
-    chunker: chunkText,
-    ...createAttachedChannelResultAdapter({
-      channel: 'twilio-whatsapp',
-      sendText: async ({ cfg, to, text }) => {
-        const channelCfg = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
-        if (!channelCfg) throw new Error('Twilio WhatsApp channel not configured');
-
-        const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
-        const authToken = process.env.TWILIO_AUTH_TOKEN || '';
-        if (!accountSid || !authToken) throw new Error('Twilio credentials not set');
-
-        const client = twilio(accountSid, authToken);
-        const result = await client.messages.create({
-          from: toWhatsAppId(channelCfg.fromNumber),
-          to: toWhatsAppId(to),
-          body: text || '',
-        });
-        return { messageId: result.sid };
-      },
-      sendMedia: async ({ cfg, to, text, mediaUrl }) => {
-        const channelCfg = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
-        if (!channelCfg) throw new Error('Twilio WhatsApp channel not configured');
-
-        const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
-        const authToken = process.env.TWILIO_AUTH_TOKEN || '';
-        if (!accountSid || !authToken) throw new Error('Twilio credentials not set');
-
-        const client = twilio(accountSid, authToken);
-        const from = toWhatsAppId(channelCfg.fromNumber);
-        const toWa = toWhatsAppId(to);
-
-        let stagedUrl: string | null = null;
-        if (mediaUrl) {
-          const outboundDir = path.join(os.homedir(), '.openclaw', 'media', 'twilio-whatsapp', 'outbound');
-          stagedUrl = stageMedia(mediaUrl, outboundDir, channelCfg.webhookUrl);
-        }
-
-        const result = await client.messages.create({
-          from,
-          to: toWa,
-          body: text || '',
-          ...(stagedUrl ? { mediaUrl: [stagedUrl] } : {}),
-        });
-        return { messageId: result.sid };
-      },
-    }),
-    resolveTarget: ({ to }: { to?: string }) => {
-      const normalized = to?.trim();
-      if (!normalized) return { ok: false, error: new Error('No target specified') };
-      return { ok: true, to: fromWhatsAppId(normalized) };
     },
   },
 });

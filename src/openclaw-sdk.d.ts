@@ -4,10 +4,23 @@ declare module 'openclaw/plugin-sdk/channel-core' {
     name?: string;
     description?: string;
     plugin: any;
+    messageAdapter?: any;
     configSchema?: any;
     setRuntime?: (runtime: any) => void;
     registerCliMetadata?: any;
     registerFull?: any;
+  }): any;
+
+  export function defineSetupPluginEntry(params: {
+    id: string;
+    channel: {
+      id: string;
+      inspectAccount: (params: { cfg: any; accountId?: string }) => {
+        enabled: boolean;
+        configured: boolean;
+        hint?: string;
+      };
+    };
   }): any;
 
   export function createChatChannelPlugin<TAccount = any>(params: {
@@ -136,6 +149,65 @@ declare module 'openclaw/plugin-sdk/runtime-store' {
     tryGetRuntime: () => any;
     getRuntime: () => any;
   };
+}
+
+declare module 'openclaw/plugin-sdk/command-auth' {
+  export function shouldComputeCommandAuthorized(text?: string, cfg?: any, options?: any): boolean;
+  export function hasControlCommand(text?: string, cfg?: any, options?: any): boolean;
+  export function hasInlineCommandTokens(text?: string): boolean;
+  export function isControlCommandMessage(text?: string, cfg?: any, options?: any): boolean;
+}
+
+declare module 'openclaw/plugin-sdk/channel-message' {
+  export type MessageReceipt = {
+    primaryPlatformMessageId?: string;
+    platformMessageIds: string[];
+    parts: any[];
+    threadId?: string;
+    replyToId?: string;
+    editToken?: string;
+    deleteToken?: string;
+    sentAt: number;
+    raw?: readonly any[];
+  };
+
+  export interface SendTextCtx {
+    cfg: any;
+    to: string;
+    text: string;
+    accountId?: string;
+    replyToId?: string;
+    threadId?: string;
+    signal?: AbortSignal;
+  }
+
+  export interface SendMediaCtx extends SendTextCtx {
+    mediaUrl?: string;
+    mediaAccess?: any;
+    mediaLocalRoots?: readonly string[];
+    mediaReadFile?: (filePath: string) => Promise<Buffer>;
+  }
+
+  export function defineChannelMessageAdapter(params: {
+    id: string;
+    durableFinal: {
+      capabilities: {
+        text?: boolean;
+        media?: boolean;
+        replyTo?: boolean;
+        thread?: boolean;
+        messageSendingHooks?: boolean;
+      };
+    };
+    send: {
+      text: (ctx: SendTextCtx) => Promise<{ receipt: MessageReceipt }>;
+      media?: (ctx: SendMediaCtx) => Promise<{ receipt: MessageReceipt }>;
+    };
+  }): any;
+
+  export function createMessageReceiptFromOutboundResults(
+    results: ReadonlyArray<{ messageId: string; raw?: any }>,
+  ): { receipt: MessageReceipt };
 }
 
 declare module 'openclaw/plugin-sdk/channel-inbound' {
