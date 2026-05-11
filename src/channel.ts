@@ -8,6 +8,7 @@ import { chunkText } from 'openclaw/plugin-sdk/reply-chunking';
 import { registerPluginHttpRoute } from 'openclaw/plugin-sdk/webhook-ingress';
 import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound';
 import { shouldComputeCommandAuthorized } from 'openclaw/plugin-sdk/command-auth';
+import { resolveStateDir } from 'openclaw/plugin-sdk/state-paths';
 import { getTwilioWhatsAppRuntime } from './runtime.js';
 import { toWhatsAppId, fromWhatsAppId } from './util.js';
 import { stageMedia, createMediaServeHandler } from './media.js';
@@ -121,11 +122,11 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         const { accountSid, authToken } = account;
         const { fromNumber, webhookUrl, allowFrom: allowFromList } = account.config;
 
-        // Use the SDK-resolved agent dir rather than os.homedir(): in containers
-        // $HOME may not match the workspace owner, leaving the chosen path
-        // unwritable (EACCES on mkdir) when the channel tries to stage media.
-        const agentDir = ctx.runtime.agent.resolveAgentDir(ctx.cfg);
-        const mediaBase = path.join(agentDir, 'media', 'twilio-whatsapp');
+        // Use the SDK's resolveStateDir() — it honors OPENCLAW_STATE_DIR and
+        // falls back to ~/.openclaw. os.homedir() is wrong in containers where
+        // $HOME doesn't match the workspace owner (EACCES on mkdir), and the
+        // channel's ctx.runtime is only a logging runtime (no .agent helpers).
+        const mediaBase = path.join(resolveStateDir(), 'media', 'twilio-whatsapp');
         const inboundDir = path.join(mediaBase, 'inbound');
         const outboundDir = path.join(mediaBase, 'outbound');
         fs.mkdirSync(inboundDir, { recursive: true });
@@ -276,8 +277,7 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
 
         let stagedUrl: string | null = null;
         if (mediaUrl) {
-          const agentDir = getTwilioWhatsAppRuntime().agent.resolveAgentDir(cfg);
-          const outboundDir = path.join(agentDir, 'media', 'twilio-whatsapp', 'outbound');
+          const outboundDir = path.join(resolveStateDir(), 'media', 'twilio-whatsapp', 'outbound');
           stagedUrl = stageMedia(mediaUrl, outboundDir, channelCfg.webhookUrl);
         }
 
