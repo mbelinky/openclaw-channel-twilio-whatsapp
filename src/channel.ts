@@ -1,5 +1,4 @@
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import twilio from 'twilio';
 import { createChatChannelPlugin } from 'openclaw/plugin-sdk/channel-core';
@@ -122,7 +121,11 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         const { accountSid, authToken } = account;
         const { fromNumber, webhookUrl, allowFrom: allowFromList } = account.config;
 
-        const mediaBase = path.join(os.homedir(), '.openclaw', 'media', 'twilio-whatsapp');
+        // Use the SDK-resolved agent dir rather than os.homedir(): in containers
+        // $HOME may not match the workspace owner, leaving the chosen path
+        // unwritable (EACCES on mkdir) when the channel tries to stage media.
+        const agentDir = ctx.runtime.agent.resolveAgentDir(ctx.cfg);
+        const mediaBase = path.join(agentDir, 'media', 'twilio-whatsapp');
         const inboundDir = path.join(mediaBase, 'inbound');
         const outboundDir = path.join(mediaBase, 'outbound');
         fs.mkdirSync(inboundDir, { recursive: true });
@@ -273,7 +276,8 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
 
         let stagedUrl: string | null = null;
         if (mediaUrl) {
-          const outboundDir = path.join(os.homedir(), '.openclaw', 'media', 'twilio-whatsapp', 'outbound');
+          const agentDir = getTwilioWhatsAppRuntime().agent.resolveAgentDir(cfg);
+          const outboundDir = path.join(agentDir, 'media', 'twilio-whatsapp', 'outbound');
           stagedUrl = stageMedia(mediaUrl, outboundDir, channelCfg.webhookUrl);
         }
 
