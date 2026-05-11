@@ -138,6 +138,10 @@ declare module 'openclaw/plugin-sdk/webhook-ingress' {
   export function normalizePluginHttpPath(path: string | undefined, fallback: string): string | null;
 }
 
+declare module 'openclaw/plugin-sdk/state-paths' {
+  export function resolveStateDir(env?: NodeJS.ProcessEnv): string;
+}
+
 declare module 'openclaw/plugin-sdk/runtime-store' {
   export function createPluginRuntimeStore(options: {
     pluginId: string;
