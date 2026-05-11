@@ -10,6 +10,18 @@ declare module 'openclaw/plugin-sdk/channel-core' {
     registerFull?: any;
   }): any;
 
+  export function defineSetupPluginEntry(params: {
+    id: string;
+    channel: {
+      id: string;
+      inspectAccount: (params: { cfg: any; accountId?: string }) => {
+        enabled: boolean;
+        configured: boolean;
+        hint?: string;
+      };
+    };
+  }): any;
+
   export function createChatChannelPlugin<TAccount = any>(params: {
     base: {
       id: string;
@@ -136,6 +148,13 @@ declare module 'openclaw/plugin-sdk/runtime-store' {
     tryGetRuntime: () => any;
     getRuntime: () => any;
   };
+}
+
+declare module 'openclaw/plugin-sdk/command-auth' {
+  export function shouldComputeCommandAuthorized(text?: string, cfg?: any, options?: any): boolean;
+  export function hasControlCommand(text?: string, cfg?: any, options?: any): boolean;
+  export function hasInlineCommandTokens(text?: string): boolean;
+  export function isControlCommandMessage(text?: string, cfg?: any, options?: any): boolean;
 }
 
 declare module 'openclaw/plugin-sdk/channel-inbound' {

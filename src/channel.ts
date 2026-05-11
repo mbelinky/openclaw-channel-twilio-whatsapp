@@ -1,5 +1,4 @@
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import twilio from 'twilio';
 import { createChatChannelPlugin } from 'openclaw/plugin-sdk/channel-core';
@@ -8,6 +7,7 @@ import { createAttachedChannelResultAdapter } from 'openclaw/plugin-sdk/channel-
 import { chunkText } from 'openclaw/plugin-sdk/reply-chunking';
 import { registerPluginHttpRoute } from 'openclaw/plugin-sdk/webhook-ingress';
 import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound';
+import { shouldComputeCommandAuthorized } from 'openclaw/plugin-sdk/command-auth';
 import { getTwilioWhatsAppRuntime } from './runtime.js';
 import { toWhatsAppId, fromWhatsAppId } from './util.js';
 import { stageMedia, createMediaServeHandler } from './media.js';
@@ -121,7 +121,11 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         const { accountSid, authToken } = account;
         const { fromNumber, webhookUrl, allowFrom: allowFromList } = account.config;
 
-        const mediaBase = path.join(os.homedir(), '.openclaw', 'media', 'twilio-whatsapp');
+        // Use the SDK-resolved agent dir rather than os.homedir(): in containers
+        // $HOME may not match the workspace owner, leaving the chosen path
+        // unwritable (EACCES on mkdir) when the channel tries to stage media.
+        const agentDir = ctx.runtime.agent.resolveAgentDir(ctx.cfg);
+        const mediaBase = path.join(agentDir, 'media', 'twilio-whatsapp');
         const inboundDir = path.join(mediaBase, 'inbound');
         const outboundDir = path.join(mediaBase, 'outbound');
         fs.mkdirSync(inboundDir, { recursive: true });
@@ -140,7 +144,18 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
             return { messageId: result.sid };
           };
 
-          await dispatchInboundDirectDmWithRuntime({
+          // The webhook layer (webhook.ts) and createRestrictSendersChannelSecurity
+          // have already authorized this sender. shouldComputeCommandAuthorized
+          // detects /cmd, !cmd, and inline command tokens; when true we mark the
+          // sender as authorized so the host's auto-reply pipeline runs the command.
+          const isCommand = shouldComputeCommandAuthorized(msg.text, ctx.cfg);
+          ctx.log?.debug?.(
+            `[twilio-whatsapp] inbound from=${msg.senderId} ` +
+              `len=${msg.text.length} isCommand=${isCommand} ` +
+              `messageSid=${msg.messageSid}`,
+          );
+
+          const result = await dispatchInboundDirectDmWithRuntime({
             cfg: ctx.cfg,
             channel: 'twilio-whatsapp',
             accountId: account.accountId,
@@ -149,8 +164,10 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
             channelLabel: 'Twilio WhatsApp',
             conversationLabel: msg.senderName || msg.senderId,
             rawBody: msg.text,
+            commandAuthorized: isCommand ? true : undefined,
             senderAddress: msg.senderId,
             recipientAddress: toWhatsAppId(fromNumber),
+            originatingTo: toWhatsAppId(msg.senderId),
             senderId: msg.senderId,
             messageId: msg.messageSid,
             provider: 'twilio-whatsapp',
@@ -162,6 +179,12 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
               return {};
             },
           });
+
+          ctx.log?.debug?.(
+            `[twilio-whatsapp] dispatched messageSid=${msg.messageSid} ` +
+              `route.agentId=${result?.route?.agentId} ` +
+              `route.sessionKey=${result?.route?.sessionKey}`,
+          );
         };
 
         const unregisterWebhook = registerPluginHttpRoute({
@@ -253,7 +276,8 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
 
         let stagedUrl: string | null = null;
         if (mediaUrl) {
-          const outboundDir = path.join(os.homedir(), '.openclaw', 'media', 'twilio-whatsapp', 'outbound');
+          const agentDir = getTwilioWhatsAppRuntime().agent.resolveAgentDir(cfg);
+          const outboundDir = path.join(agentDir, 'media', 'twilio-whatsapp', 'outbound');
           stagedUrl = stageMedia(mediaUrl, outboundDir, channelCfg.webhookUrl);
         }
 
