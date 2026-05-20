@@ -51,6 +51,67 @@ function resolveAccount(cfg: any, accountId?: string): ResolvedTwilioAccount | n
   };
 }
 
+type TwilioClient = ReturnType<typeof twilio>;
+
+function resolveLogger() {
+  // getTwilioWhatsAppRuntime() throws if the runtime isn't initialized yet — wrap it.
+  try {
+    return getTwilioWhatsAppRuntime()?.logging?.getChildLogger?.({ plugin: 'twilio-whatsapp' });
+  } catch {
+    return undefined; // fall back to console
+  }
+}
+
+// Twilio rejects WhatsApp bodies over TWILIO_MAX_MESSAGE_LEN with error 21617 and the
+// reply is silently lost. The gateway does not honor the programmatic outbound.chunker
+// for the result-adapter / inbound-deliver paths, so we split here at the send site and
+// surface any Twilio failure (thrown 400 or async failed/undelivered status) instead of
+// swallowing it. Short text passes through as a single message.
+async function sendChunkedWhatsApp(args: {
+  client: TwilioClient;
+  from: string; // already toWhatsAppId()-normalized
+  to: string; // already toWhatsAppId()-normalized
+  text?: string;
+  mediaUrl?: string; // attaches to exactly ONE message (the first)
+}): Promise<{ messageId?: string }> {
+  const { client, from, to, text, mediaUrl } = args;
+  const log = resolveLogger();
+  const chunks = chunkText((text ?? '').trim(), TWILIO_MAX_MESSAGE_LEN).filter((c) => c.length > 0);
+
+  if (chunks.length === 0 && !mediaUrl) return {}; // nothing to send
+  if (chunks.length === 0 && mediaUrl) chunks.push(''); // media-only message
+
+  let firstSid: string | undefined;
+  for (let i = 0; i < chunks.length; i++) {
+    const attachMedia = mediaUrl && i === 0;
+    try {
+      const result = await client.messages.create({
+        from,
+        to,
+        body: chunks[i],
+        ...(attachMedia ? { mediaUrl: [mediaUrl] } : {}),
+      });
+      if (i === 0) firstSid = result.sid;
+      if (result.status === 'failed' || result.status === 'undelivered') {
+        (log ?? console).error(
+          `[twilio-whatsapp] chunk ${i + 1}/${chunks.length} status=${result.status} ` +
+            `code=${result.errorCode} sid=${result.sid}`,
+        );
+        throw new Error(
+          `Twilio message ${result.sid} ${result.status} (code ${result.errorCode})`,
+        );
+      }
+    } catch (err) {
+      (log ?? console).error(
+        `[twilio-whatsapp] failed sending chunk ${i + 1}/${chunks.length} ` +
+          `to=${to} len=${chunks[i].length}: ${(err as Error).message}`,
+      );
+      throw err; // rethrow → gateway sees the failure (fixes silent loss)
+    }
+  }
+  return { messageId: firstSid };
+}
+
 const twilioWhatsAppSecurity = createRestrictSendersChannelSecurity<ResolvedTwilioAccount>({
   channelKey: 'twilio-whatsapp',
   resolveDmPolicy: (account) => account.config.dmPolicy,
@@ -137,12 +198,12 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         const dispatch = async (msg: InboundMessage) => {
           const sendTwilioReply = async (text: string) => {
             const client = twilio(accountSid, authToken);
-            const result = await client.messages.create({
+            return sendChunkedWhatsApp({
+              client,
               from: toWhatsAppId(fromNumber),
               to: toWhatsAppId(msg.senderId),
-              body: text,
+              text,
             });
-            return { messageId: result.sid };
           };
 
           // The webhook layer (webhook.ts) and createRestrictSendersChannelSecurity
@@ -256,12 +317,13 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         if (!accountSid || !authToken) throw new Error('Twilio credentials not set');
 
         const client = twilio(accountSid, authToken);
-        const result = await client.messages.create({
+        const { messageId } = await sendChunkedWhatsApp({
+          client,
           from: toWhatsAppId(channelCfg.fromNumber),
           to: toWhatsAppId(to),
-          body: text || '',
+          text,
         });
-        return { messageId: result.sid };
+        return { messageId: messageId ?? '' };
       },
       sendMedia: async ({ cfg, to, text, mediaUrl }) => {
         const channelCfg = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
@@ -281,13 +343,14 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
           stagedUrl = stageMedia(mediaUrl, outboundDir, channelCfg.webhookUrl);
         }
 
-        const result = await client.messages.create({
+        const { messageId } = await sendChunkedWhatsApp({
+          client,
           from,
           to: toWa,
-          body: text || '',
-          ...(stagedUrl ? { mediaUrl: [stagedUrl] } : {}),
+          text,
+          mediaUrl: stagedUrl ?? undefined,
         });
-        return { messageId: result.sid };
+        return { messageId: messageId ?? '' };
       },
     }),
     resolveTarget: ({ to }: { to?: string }) => {
