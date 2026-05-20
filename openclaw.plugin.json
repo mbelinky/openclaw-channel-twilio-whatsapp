@@ -3,7 +3,7 @@
   "kind": "channel",
   "name": "Twilio WhatsApp Channel",
   "description": "WhatsApp channel via Twilio Business API",
-  "version": "2.1.1",
+  "version": "2.1.4",
   "channels": ["twilio-whatsapp"],
   "channelEnvVars": {
     "twilio-whatsapp": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]
@@ -47,6 +47,17 @@
             "type": "string",
             "format": "uri",
             "description": "Public base URL where Twilio reaches OpenClaw — used for signature validation and outbound media serving."
+          },
+          "textChunkLimit": {
+            "type": "number",
+            "default": 1600,
+            "description": "Max characters per outbound WhatsApp message before splitting (Twilio rejects bodies over 1600 with error 21617)."
+          },
+          "chunkMode": {
+            "type": "string",
+            "enum": ["length", "newline"],
+            "default": "length",
+            "description": "Split long replies on length, or prefer paragraph boundaries."
           }
         },
         "required": ["enabled", "fromNumber", "webhookUrl"]
