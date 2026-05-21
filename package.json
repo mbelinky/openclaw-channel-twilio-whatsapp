@@ -35,15 +35,15 @@
     "install": {
       "npmSpec": "@srinathh/openclaw-channel-twilio-whatsapp@latest",
       "defaultChoice": "npm",
-      "minHostVersion": ">=2026.3.28"
+      "minHostVersion": ">=2026.5.26"
     },
     "compat": {
-      "pluginApi": ">=2026.3.28",
-      "minGatewayVersion": "2026.3.28"
+      "pluginApi": ">=2026.5.26",
+      "minGatewayVersion": "2026.5.26"
     },
     "build": {
-      "openclawVersion": "2026.4.29",
-      "pluginSdkVersion": "2026.4.29"
+      "openclawVersion": "2026.5.26",
+      "pluginSdkVersion": "2026.5.26"
     },
     "release": {
       "publishToClawHub": true,
@@ -55,14 +55,15 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "npm run build && node --test test/*.mjs"
   },
   "dependencies": {
     "mime-types": "^3.0.2",
-    "twilio": "^5.0.0"
+    "twilio": "^6.0.2"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.3.28"
+    "openclaw": ">=2026.5.26"
   },
   "devDependencies": {
     "@types/mime-types": "^3.0.1",

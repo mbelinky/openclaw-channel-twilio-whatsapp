@@ -1,8 +1,10 @@
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
-import twilio from 'twilio';
 import { createChatChannelPlugin } from 'openclaw/plugin-sdk/channel-core';
+import {
+  createChannelMessageAdapterFromOutbound,
+  createMessageReceiptFromOutboundResults,
+} from 'openclaw/plugin-sdk/channel-message';
 import { createRestrictSendersChannelSecurity } from 'openclaw/plugin-sdk/channel-policy';
 import { createAttachedChannelResultAdapter } from 'openclaw/plugin-sdk/channel-send-result';
 import { chunkText } from 'openclaw/plugin-sdk/reply-chunking';
@@ -11,19 +13,49 @@ import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-
 import { shouldComputeCommandAuthorized } from 'openclaw/plugin-sdk/command-auth';
 import { resolveStateDir } from 'openclaw/plugin-sdk/state-paths';
 import { getTwilioWhatsAppRuntime } from './runtime.js';
-import { toWhatsAppId, fromWhatsAppId } from './util.js';
+import { toWhatsAppId, fromWhatsAppId, stableIdHash } from './util.js';
 import { stageMedia, createMediaServeHandler } from './media.js';
-import { createWebhookHandler, createHealthHandler, type InboundMessage } from './webhook.js';
-import { diagFlagEnabled, diagLog, DIAG_BOOT, DIAG_SEND } from './diag.js';
+import {
+  createWebhookHandler,
+  createStatusCallbackHandler,
+  createHealthHandler,
+  type InboundMessage,
+} from './webhook.js';
+import { sendTwilioWhatsAppMessages } from './send.js';
+import { sendTwilioTypingIndicator } from './feedback.js';
+import { scheduleProcessingAck } from './processing-ack.js';
+import { emitTimingEvent, logTiming, type TimingLogger } from './diagnostics.js';
 
 const TWILIO_MAX_MESSAGE_LEN = 1600;
+const INBOUND_WEBHOOK_PATHS = ['/webhook/twilio-whatsapp', '/webhook/twilio'];
+
+function isPublicHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 interface TwilioWhatsAppConfig {
   enabled: boolean;
-  dmPolicy: 'allowlist' | 'open';
+  dmPolicy?: 'allowlist' | 'open';
   allowFrom?: string[];
+  groupPolicy?: 'disabled' | 'allowlist' | 'open';
+  groupAllowFrom?: string[];
+  groups?: Record<string, unknown>;
   fromNumber: string;
   webhookUrl: string;
+  statusCallbackUrl?: string;
+  sendTimeoutMs?: number;
+  sendRetries?: number;
+  textChunkLimit?: number;
+  mediaMaxMb?: number;
+  typingIndicators?: boolean;
+  typingTimeoutMs?: number;
+  processingAckText?: string;
+  processingAckDelayMs?: number;
+  dmHistoryLimit?: number;
 }
 
 interface ResolvedTwilioAccount {
@@ -33,6 +65,10 @@ interface ResolvedTwilioAccount {
   config: TwilioWhatsAppConfig;
   accountSid: string;
   authToken: string;
+}
+
+function resolveDmPolicy(config: Pick<TwilioWhatsAppConfig, 'dmPolicy'> | undefined): 'allowlist' | 'open' {
+  return config?.dmPolicy === 'open' ? 'open' : 'allowlist';
 }
 
 function resolveAccount(cfg: any, accountId?: string): ResolvedTwilioAccount | null {
@@ -47,76 +83,15 @@ function resolveAccount(cfg: any, accountId?: string): ResolvedTwilioAccount | n
     accountId: accountId || 'default',
     name: 'Twilio WhatsApp',
     enabled: channelCfg.enabled,
-    config: channelCfg,
+    config: { ...channelCfg, dmPolicy: resolveDmPolicy(channelCfg) },
     accountSid,
     authToken,
   };
 }
 
-type TwilioClient = ReturnType<typeof twilio>;
-
-function resolveLogger() {
-  // getTwilioWhatsAppRuntime() throws if the runtime isn't initialized yet — wrap it.
-  try {
-    return getTwilioWhatsAppRuntime()?.logging?.getChildLogger?.({ plugin: 'twilio-whatsapp' });
-  } catch {
-    return undefined; // fall back to console
-  }
-}
-
-// Twilio rejects WhatsApp bodies over TWILIO_MAX_MESSAGE_LEN with error 21617 and the
-// reply is silently lost. The gateway does not honor the programmatic outbound.chunker
-// for the result-adapter / inbound-deliver paths, so we split here at the send site and
-// surface any Twilio failure (thrown 400 or async failed/undelivered status) instead of
-// swallowing it. Short text passes through as a single message.
-async function sendChunkedWhatsApp(args: {
-  client: TwilioClient;
-  from: string; // already toWhatsAppId()-normalized
-  to: string; // already toWhatsAppId()-normalized
-  text?: string;
-  mediaUrl?: string; // attaches to exactly ONE message (the first)
-}): Promise<{ messageId?: string }> {
-  const { client, from, to, text, mediaUrl } = args;
-  const log = resolveLogger();
-  const chunks = chunkText((text ?? '').trim(), TWILIO_MAX_MESSAGE_LEN).filter((c) => c.length > 0);
-
-  if (chunks.length === 0 && !mediaUrl) return {}; // nothing to send
-  if (chunks.length === 0 && mediaUrl) chunks.push(''); // media-only message
-
-  let firstSid: string | undefined;
-  for (let i = 0; i < chunks.length; i++) {
-    const attachMedia = mediaUrl && i === 0;
-    try {
-      const result = await client.messages.create({
-        from,
-        to,
-        body: chunks[i],
-        ...(attachMedia ? { mediaUrl: [mediaUrl] } : {}),
-      });
-      if (i === 0) firstSid = result.sid;
-      if (result.status === 'failed' || result.status === 'undelivered') {
-        (log ?? console).error(
-          `[twilio-whatsapp] chunk ${i + 1}/${chunks.length} status=${result.status} ` +
-            `code=${result.errorCode} sid=${result.sid}`,
-        );
-        throw new Error(
-          `Twilio message ${result.sid} ${result.status} (code ${result.errorCode})`,
-        );
-      }
-    } catch (err) {
-      (log ?? console).error(
-        `[twilio-whatsapp] failed sending chunk ${i + 1}/${chunks.length} ` +
-          `to=${to} len=${chunks[i].length}: ${(err as Error).message}`,
-      );
-      throw err; // rethrow → gateway sees the failure (fixes silent loss)
-    }
-  }
-  return { messageId: firstSid };
-}
-
 const twilioWhatsAppSecurity = createRestrictSendersChannelSecurity<ResolvedTwilioAccount>({
   channelKey: 'twilio-whatsapp',
-  resolveDmPolicy: (account) => account.config.dmPolicy,
+  resolveDmPolicy: (account) => resolveDmPolicy(account.config),
   resolveDmAllowFrom: (account) => account.config.allowFrom,
   surface: 'Twilio WhatsApp',
   openScope: 'anyone with the bot number',
@@ -126,9 +101,198 @@ const twilioWhatsAppSecurity = createRestrictSendersChannelSecurity<ResolvedTwil
   normalizeDmEntry: (raw) => raw.replace(/^whatsapp:/i, '').replace(/^\+?/, '+'),
 });
 
+function statusCallbackUrl(config: TwilioWhatsAppConfig): string | undefined {
+  return config.statusCallbackUrl || `${config.webhookUrl.replace(/\/+$/, '')}/webhook/twilio-whatsapp/status`;
+}
+
+function logWarn(log: TimingLogger | undefined, message: string) {
+  (log?.warn ?? log?.info)?.(message);
+}
+
+function hasGroupCompatibilityConfig(config: TwilioWhatsAppConfig): boolean {
+  return (
+    config.groupPolicy !== undefined ||
+    Array.isArray(config.groupAllowFrom) ||
+    Boolean(config.groups && Object.keys(config.groups).length > 0)
+  );
+}
+
+type TwilioSendTimingContext = {
+  log?: TimingLogger;
+  kind: 'final_reply' | 'processing_ack' | 'outbound_text' | 'outbound_media';
+  sessionKey?: string;
+  messageSid?: string;
+};
+
+async function sendWithConfig(params: {
+  config: TwilioWhatsAppConfig;
+  accountSid: string;
+  authToken: string;
+  to: string;
+  text: string;
+  mediaUrls?: string[];
+  timing?: TwilioSendTimingContext;
+}) {
+  const startedAt = Date.now();
+  const deliveryKind = params.mediaUrls?.length ? 'media' : 'text';
+  const timingFields = {
+    kind: params.timing?.kind,
+    sessionKey: params.timing?.sessionKey,
+    messageSid: params.timing?.messageSid,
+    toHash: stableIdHash(params.to),
+    mediaCount: params.mediaUrls?.length ?? 0,
+  };
+  logTiming(params.timing?.log, 'twilio_send_start', timingFields);
+  emitTimingEvent({
+    type: 'message.delivery.started',
+    channel: 'twilio-whatsapp',
+    sessionKey: params.timing?.sessionKey,
+    deliveryKind,
+  });
+  try {
+    const result = await sendTwilioWhatsAppMessages({
+      accountSid: params.accountSid,
+      authToken: params.authToken,
+      fromNumber: params.config.fromNumber,
+      toNumber: params.to,
+      text: params.text,
+      mediaUrls: params.mediaUrls,
+      statusCallbackUrl: statusCallbackUrl(params.config),
+      timeoutMs: params.config.sendTimeoutMs,
+      maxRetries: params.config.sendRetries,
+      chunkLimit: params.config.textChunkLimit || TWILIO_MAX_MESSAGE_LEN,
+    });
+    const durationMs = Date.now() - startedAt;
+    logTiming(params.timing?.log, 'twilio_send_done', {
+      ...timingFields,
+      durationMs,
+      messageCount: result.messageIds.length,
+      payloadCount: result.payloadCount,
+    });
+    emitTimingEvent({
+      type: 'message.delivery.completed',
+      channel: 'twilio-whatsapp',
+      sessionKey: params.timing?.sessionKey,
+      deliveryKind,
+      durationMs,
+      resultCount: result.messageIds.length,
+    });
+    return result;
+  } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    logTiming(params.timing?.log, 'twilio_send_error', {
+      ...timingFields,
+      durationMs,
+      error: error instanceof Error ? error.name || 'Error' : 'unknown',
+    });
+    emitTimingEvent({
+      type: 'message.delivery.error',
+      channel: 'twilio-whatsapp',
+      sessionKey: params.timing?.sessionKey,
+      deliveryKind,
+      durationMs,
+      errorCategory: error instanceof Error ? error.name || 'Error' : 'unknown',
+    });
+    throw error;
+  }
+}
+
+const twilioWhatsAppOutbound = {
+  deliveryMode: 'gateway' as const,
+  textChunkLimit: TWILIO_MAX_MESSAGE_LEN,
+  chunker: chunkText,
+  deliveryCapabilities: {
+    durableFinal: {
+      text: true,
+      media: true,
+    },
+  },
+  ...createAttachedChannelResultAdapter({
+    channel: 'twilio-whatsapp',
+    sendText: async ({ cfg, to, text }) => {
+      const channelCfg = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
+      if (!channelCfg) throw new Error('Twilio WhatsApp channel not configured');
+
+      const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
+      const authToken = process.env.TWILIO_AUTH_TOKEN || '';
+      if (!accountSid || !authToken) throw new Error('Twilio credentials not set');
+
+      const result = await sendWithConfig({
+        config: channelCfg,
+        accountSid,
+        authToken,
+        to,
+        text,
+        timing: {
+          log: undefined,
+          kind: 'outbound_text',
+        },
+      });
+      return {
+        messageId: result.messageIds[0] || '',
+        receipt: createMessageReceiptFromOutboundResults({
+          results: result.messageIds.map((messageId) => ({ channel: 'twilio-whatsapp', messageId })),
+          kind: 'text',
+        }),
+      };
+    },
+    sendMedia: async ({ cfg, to, text, mediaUrl }) => {
+      const channelCfg = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
+      if (!channelCfg) throw new Error('Twilio WhatsApp channel not configured');
+
+      const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
+      const authToken = process.env.TWILIO_AUTH_TOKEN || '';
+      if (!accountSid || !authToken) throw new Error('Twilio credentials not set');
+
+      let stagedUrl: string | null = null;
+      if (mediaUrl) {
+        const trimmedMediaUrl = mediaUrl.trim();
+        if (isPublicHttpsUrl(trimmedMediaUrl)) {
+          stagedUrl = trimmedMediaUrl;
+        } else {
+          const outboundDir = path.join(resolveStateDir(), 'media', 'twilio-whatsapp', 'outbound');
+          stagedUrl = stageMedia(trimmedMediaUrl, outboundDir, channelCfg.webhookUrl);
+        }
+        if (!stagedUrl) {
+          throw new Error(`Twilio WhatsApp media not found or not readable: ${mediaUrl}`);
+        }
+      }
+
+      const result = await sendWithConfig({
+        config: channelCfg,
+        accountSid,
+        authToken,
+        to,
+        text: text || '',
+        mediaUrls: stagedUrl ? [stagedUrl] : undefined,
+        timing: {
+          log: undefined,
+          kind: 'outbound_media',
+        },
+      });
+      return {
+        messageId: result.messageIds[0] || '',
+        receipt: createMessageReceiptFromOutboundResults({
+          results: result.messageIds.map((messageId) => ({ channel: 'twilio-whatsapp', messageId })),
+          kind: 'media',
+        }),
+      };
+    },
+  }),
+  resolveTarget: ({ to }: { to?: string }) => {
+    const normalized = to?.trim();
+    if (!normalized) return { ok: false as const, error: new Error('No target specified') };
+    return { ok: true as const, to: fromWhatsAppId(normalized) };
+  },
+};
+
 export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccount>({
   base: {
     id: 'twilio-whatsapp',
+    message: createChannelMessageAdapterFromOutbound({
+      id: 'twilio-whatsapp',
+      outbound: twilioWhatsAppOutbound,
+    }),
     config: {
       listAccountIds: () => ['default'],
       resolveAccount: (cfg: any, accountId?: string) => resolveAccount(cfg, accountId),
@@ -163,6 +327,9 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         if (!accountSid || !authToken) return { status: 'not-configured', hint: 'Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN' };
         if (!channelCfg.fromNumber) return { status: 'not-configured', hint: 'Set channels.twilio-whatsapp.fromNumber' };
         if (!channelCfg.webhookUrl) return { status: 'not-configured', hint: 'Set channels.twilio-whatsapp.webhookUrl' };
+        if (resolveDmPolicy(channelCfg) === 'allowlist' && !(channelCfg.allowFrom || []).length) {
+          return { status: 'not-configured', hint: 'Set channels.twilio-whatsapp.allowFrom or change dmPolicy to open' };
+        }
         return { status: 'configured' };
       },
     },
@@ -183,83 +350,65 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
       startAccount: async (ctx) => {
         const account = ctx.account;
         const { accountSid, authToken } = account;
-        const { fromNumber, webhookUrl, allowFrom: allowFromList } = account.config;
+        const { fromNumber, webhookUrl, allowFrom: allowFromList, mediaMaxMb } = account.config;
+
+        if (hasGroupCompatibilityConfig(account.config)) {
+          logWarn(
+            ctx.log,
+            '[twilio-whatsapp] group config keys are present but Twilio WhatsApp Business API is DM-only; groupPolicy, groupAllowFrom, and groups are ignored. DM access is still controlled by dmPolicy and allowFrom.',
+          );
+        }
 
         // Use the SDK's resolveStateDir() — it honors OPENCLAW_STATE_DIR and
         // falls back to ~/.openclaw. os.homedir() is wrong in containers where
         // $HOME doesn't match the workspace owner (EACCES on mkdir), and the
         // channel's ctx.runtime is only a logging runtime (no .agent helpers).
-        const resolvedStateDir = resolveStateDir();
-        const mediaBase = path.join(resolvedStateDir, 'media', 'twilio-whatsapp');
+        const mediaBase = path.join(resolveStateDir(), 'media', 'twilio-whatsapp');
         const inboundDir = path.join(mediaBase, 'inbound');
         const outboundDir = path.join(mediaBase, 'outbound');
+        fs.mkdirSync(inboundDir, { recursive: true });
+        fs.mkdirSync(outboundDir, { recursive: true });
 
-        if (diagFlagEnabled(DIAG_BOOT)) {
-          let homedir: string | null = null;
-          try { homedir = os.homedir(); } catch { /* ignore */ }
-          diagLog(ctx, '[twilio-whatsapp][startAccount] pre-mkdir', {
-            resolvedStateDir,
-            HOME: process.env.HOME ?? null,
-            OPENCLAW_HOME: process.env.OPENCLAW_HOME ?? null,
-            OPENCLAW_STATE_DIR: process.env.OPENCLAW_STATE_DIR ?? null,
-            USER: process.env.USER ?? null,
-            USERPROFILE: process.env.USERPROFILE ?? null,
-            uid: process.getuid?.() ?? null,
-            _diag_homedir: homedir,
-            inboundDir,
-            outboundDir,
-            accountId: account.accountId,
-          });
-        }
-
-        try {
-          fs.mkdirSync(inboundDir, { recursive: true });
-          if (diagFlagEnabled(DIAG_BOOT)) {
-            diagLog(ctx, '[twilio-whatsapp][startAccount] mkdir ok', { path: inboundDir });
-          }
-        } catch (err) {
-          if (diagFlagEnabled(DIAG_BOOT)) {
-            const e = err as NodeJS.ErrnoException;
-            diagLog(ctx, '[twilio-whatsapp][startAccount] mkdir failed', {
-              path: inboundDir,
-              code: e.code ?? null,
-              errno: e.errno ?? null,
-              syscall: e.syscall ?? null,
-              message: e.message,
-            });
-          }
-          throw err;
-        }
-        try {
-          fs.mkdirSync(outboundDir, { recursive: true });
-          if (diagFlagEnabled(DIAG_BOOT)) {
-            diagLog(ctx, '[twilio-whatsapp][startAccount] mkdir ok', { path: outboundDir });
-          }
-        } catch (err) {
-          if (diagFlagEnabled(DIAG_BOOT)) {
-            const e = err as NodeJS.ErrnoException;
-            diagLog(ctx, '[twilio-whatsapp][startAccount] mkdir failed', {
-              path: outboundDir,
-              code: e.code ?? null,
-              errno: e.errno ?? null,
-              syscall: e.syscall ?? null,
-              message: e.message,
-            });
-          }
-          throw err;
-        }
-
-        const allowFrom = new Set((allowFromList || []).map((p: string) => p.replace(/^\+?/, '+')));
+        const allowFrom = new Set((allowFromList || []).map((p: string) => fromWhatsAppId(p).replace(/^\+?/, '+')));
 
         const dispatch = async (msg: InboundMessage) => {
-          const sendTwilioReply = async (text: string) => {
-            const client = twilio(accountSid, authToken);
-            return sendChunkedWhatsApp({
-              client,
-              from: toWhatsAppId(fromNumber),
-              to: toWhatsAppId(msg.senderId),
+          let currentSessionKey: string | undefined;
+          const sendTwilioReply = async (text: string, kind: TwilioSendTimingContext['kind'] = 'final_reply') => {
+            if (msg.dryRunDelivery === true) {
+              logTiming(ctx.log, 'twilio_send_dry_run', {
+                kind,
+                sessionKey: currentSessionKey,
+                messageSid: msg.messageSid,
+                toHash: stableIdHash(msg.senderId),
+              });
+              return {
+                messageId: `dry-run:${msg.messageSid || Date.now()}`,
+                receipt: createMessageReceiptFromOutboundResults({
+                  results: [{ channel: 'twilio-whatsapp', messageId: `dry-run:${msg.messageSid || Date.now()}` }],
+                  kind: 'text',
+                }),
+              };
+            }
+            const result = await sendWithConfig({
+              config: account.config,
+              accountSid,
+              authToken,
+              to: msg.senderId,
               text,
+              timing: {
+                log: ctx.log,
+                kind,
+                sessionKey: currentSessionKey,
+                messageSid: msg.messageSid,
+              },
             });
+            return {
+              messageId: result.messageIds[0] || '',
+              receipt: createMessageReceiptFromOutboundResults({
+                results: result.messageIds.map((messageId) => ({ channel: 'twilio-whatsapp', messageId })),
+                kind: 'text',
+              }),
+            };
           };
 
           // The webhook layer (webhook.ts) and createRestrictSendersChannelSecurity
@@ -268,59 +417,170 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
           // sender as authorized so the host's auto-reply pipeline runs the command.
           const isCommand = shouldComputeCommandAuthorized(msg.text, ctx.cfg);
           ctx.log?.debug?.(
-            `[twilio-whatsapp] inbound from=${msg.senderId} ` +
+            `[twilio-whatsapp] inbound sender=${stableIdHash(msg.senderId)} ` +
               `len=${msg.text.length} isCommand=${isCommand} ` +
               `messageSid=${msg.messageSid}`,
           );
 
-          const result = await dispatchInboundDirectDmWithRuntime({
-            cfg: ctx.cfg,
-            channel: 'twilio-whatsapp',
-            accountId: account.accountId,
-            peer: { kind: 'direct', id: msg.senderId },
-            runtime: getTwilioWhatsAppRuntime(),
-            channelLabel: 'Twilio WhatsApp',
-            conversationLabel: msg.senderName || msg.senderId,
-            rawBody: msg.text,
-            commandAuthorized: isCommand ? true : undefined,
-            senderAddress: msg.senderId,
-            recipientAddress: toWhatsAppId(fromNumber),
-            originatingTo: toWhatsAppId(msg.senderId),
-            senderId: msg.senderId,
-            messageId: msg.messageSid,
-            provider: 'twilio-whatsapp',
-            surface: 'twilio-whatsapp',
-            deliver: async (payload) => {
-              if (payload.text) {
-                return sendTwilioReply(payload.text);
-              }
-              return {};
+          const processingAck = scheduleProcessingAck({
+            text: account.config.processingAckText,
+            delayMs: account.config.processingAckDelayMs,
+            send: (text) => sendTwilioReply(text, 'processing_ack'),
+            onError: (error) => {
+              logWarn(
+                ctx.log,
+                `[twilio-whatsapp] processing ack failed messageSid=${msg.messageSid || 'unknown'} error=${String(
+                  error instanceof Error ? error.message : error,
+                )}`,
+              );
             },
           });
+          if (processingAck) {
+            logTiming(ctx.log, 'processing_ack_scheduled', {
+              messageSid: msg.messageSid,
+              delayMs: account.config.processingAckDelayMs ?? 12000,
+            });
+          }
 
-          ctx.log?.debug?.(
-            `[twilio-whatsapp] dispatched messageSid=${msg.messageSid} ` +
-              `route.agentId=${result?.route?.agentId} ` +
-              `route.sessionKey=${result?.route?.sessionKey}`,
-          );
+          const dispatchStartedAt = Date.now();
+          logTiming(ctx.log, 'dispatch_start', {
+            messageSid: msg.messageSid,
+            senderHash: stableIdHash(msg.senderId),
+          });
+          try {
+            const result = await dispatchInboundDirectDmWithRuntime({
+              cfg: ctx.cfg,
+              channel: 'twilio-whatsapp',
+              accountId: account.accountId,
+              peer: { kind: 'direct', id: msg.senderId },
+              runtime: getTwilioWhatsAppRuntime(),
+              channelLabel: 'Twilio WhatsApp',
+              conversationLabel: msg.senderName || stableIdHash(msg.senderId),
+              rawBody: msg.text,
+              commandAuthorized: isCommand ? true : undefined,
+              senderAddress: msg.senderId,
+              recipientAddress: toWhatsAppId(fromNumber),
+              originatingTo: toWhatsAppId(msg.senderId),
+              senderId: msg.senderId,
+              messageId: msg.messageSid,
+              provider: 'twilio-whatsapp',
+              surface: 'twilio-whatsapp',
+              deliver: async (payload) => {
+                if (payload.text) {
+                  return sendTwilioReply(payload.text, 'final_reply');
+                }
+                return {};
+              },
+            });
+            currentSessionKey = result?.route?.sessionKey;
+
+            ctx.log?.debug?.(
+              `[twilio-whatsapp] dispatched messageSid=${msg.messageSid} ` +
+                `route.agentId=${result?.route?.agentId} ` +
+                `route.sessionKey=${result?.route?.sessionKey}`,
+            );
+            const durationMs = Date.now() - dispatchStartedAt;
+            logTiming(ctx.log, 'dispatch_done', {
+              messageSid: msg.messageSid,
+              routeAgentId: result?.route?.agentId,
+              sessionKey: result?.route?.sessionKey,
+              durationMs,
+            });
+            emitTimingEvent({
+              type: 'message.processed',
+              channel: 'twilio-whatsapp',
+              messageId: msg.messageSid,
+              chatId: stableIdHash(msg.senderId),
+              sessionKey: result?.route?.sessionKey,
+              durationMs,
+              outcome: 'completed',
+            });
+          } catch (error) {
+            const durationMs = Date.now() - dispatchStartedAt;
+            logTiming(ctx.log, 'dispatch_error', {
+              messageSid: msg.messageSid,
+              durationMs,
+              error: error instanceof Error ? error.name || 'Error' : 'unknown',
+            });
+            emitTimingEvent({
+              type: 'message.processed',
+              channel: 'twilio-whatsapp',
+              messageId: msg.messageSid,
+              chatId: stableIdHash(msg.senderId),
+              sessionKey: currentSessionKey,
+              durationMs,
+              outcome: 'error',
+              error: error instanceof Error ? error.name || 'Error' : 'unknown',
+            });
+            throw error;
+          } finally {
+            processingAck?.complete();
+          }
         };
 
-        const unregisterWebhook = registerPluginHttpRoute({
-          path: '/webhook/twilio-whatsapp',
+        const webhookHandler = createWebhookHandler(
+          {
+            accountSid,
+            authToken,
+            fromNumber: toWhatsAppId(fromNumber),
+            webhookUrl,
+            webhookPaths: INBOUND_WEBHOOK_PATHS,
+            statusCallbackUrl: statusCallbackUrl(account.config),
+            dmPolicy: resolveDmPolicy(account.config),
+            allowFrom,
+            inboundDir,
+            mediaMaxBytes: Math.max(1, mediaMaxMb || 25) * 1024 * 1024,
+            typingIndicators: account.config.typingIndicators === true,
+            typingTimeoutMs: account.config.typingTimeoutMs,
+            sendTypingIndicator: (messageSid) =>
+              sendTwilioTypingIndicator({
+                accountSid,
+                authToken,
+                messageSid,
+                timeoutMs: account.config.typingTimeoutMs,
+              }),
+            log: {
+              info: (message) => ctx.log?.info?.(message),
+              warn: (message) => logWarn(ctx.log, message),
+              error: (message) => ctx.log?.error?.(message),
+            },
+          },
+          dispatch,
+        );
+
+        const unregisterWebhooks = INBOUND_WEBHOOK_PATHS.map((path) =>
+          registerPluginHttpRoute({
+            path,
+            auth: 'plugin',
+            replaceExisting: true,
+            pluginId: 'twilio-whatsapp',
+            accountId: account.accountId,
+            handler: webhookHandler,
+          }),
+        );
+
+        const unregisterStatus = registerPluginHttpRoute({
+          path: '/webhook/twilio-whatsapp/status',
           auth: 'plugin',
           replaceExisting: true,
           pluginId: 'twilio-whatsapp',
           accountId: account.accountId,
-          handler: createWebhookHandler(
-            { accountSid, authToken, fromNumber: toWhatsAppId(fromNumber), webhookUrl, allowFrom, inboundDir },
-            dispatch,
-          ),
+          handler: createStatusCallbackHandler({
+            authToken,
+            webhookUrl,
+            statusCallbackUrl: statusCallbackUrl(account.config),
+            log: {
+              info: (message) => ctx.log?.info?.(message),
+              warn: (message) => logWarn(ctx.log, message),
+              error: (message) => ctx.log?.error?.(message),
+            },
+          }),
         });
 
         const unregisterMedia = registerPluginHttpRoute({
           path: '/webhook/twilio-whatsapp/media',
-          match: 'prefix',
           auth: 'plugin',
+          match: 'prefix',
           replaceExisting: true,
           pluginId: 'twilio-whatsapp',
           accountId: account.accountId,
@@ -336,7 +596,7 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
           handler: createHealthHandler(),
         });
 
-        ctx.log?.info(`[${account.accountId}] Twilio WhatsApp channel started (from: ${fromNumber})`);
+        ctx.log?.info(`[${account.accountId}] Twilio WhatsApp channel started (from=${stableIdHash(fromNumber)})`);
 
         if (ctx.abortSignal && !ctx.abortSignal.aborted) {
           await new Promise<void>((resolve) => {
@@ -344,7 +604,8 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
           });
         }
 
-        unregisterWebhook();
+        unregisterWebhooks.forEach((unregisterWebhook) => unregisterWebhook());
+        unregisterStatus();
         unregisterMedia();
         unregisterHealth();
         ctx.log?.info(`[${account.accountId}] Twilio WhatsApp channel stopped`);
@@ -359,99 +620,5 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
       ],
     },
   },
-  outbound: {
-    deliveryMode: 'gateway',
-    textChunkLimit: TWILIO_MAX_MESSAGE_LEN,
-    chunker: chunkText,
-    ...createAttachedChannelResultAdapter({
-      channel: 'twilio-whatsapp',
-      sendText: async ({ cfg, to, text }) => {
-        const channelCfg = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
-        if (!channelCfg) throw new Error('Twilio WhatsApp channel not configured');
-
-        const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
-        const authToken = process.env.TWILIO_AUTH_TOKEN || '';
-        if (!accountSid || !authToken) throw new Error('Twilio credentials not set');
-
-        const client = twilio(accountSid, authToken);
-        const { messageId } = await sendChunkedWhatsApp({
-          client,
-          from: toWhatsAppId(channelCfg.fromNumber),
-          to: toWhatsAppId(to),
-          text,
-        });
-        return { messageId: messageId ?? '' };
-      },
-      sendMedia: async (ctx) => {
-        if (diagFlagEnabled(DIAG_SEND)) {
-          const anyCtx = ctx as any;
-          diagLog(ctx, '[twilio-whatsapp][sendMedia] called', {
-            to: anyCtx.to ?? null,
-            accountId: anyCtx.accountId ?? null,
-            threadId: anyCtx.threadId ?? null,
-            replyToId: anyCtx.replyToId ?? null,
-            mediaUrl: anyCtx.mediaUrl ?? null,
-            mediaAccess: {
-              hasReadFile: typeof anyCtx.mediaAccess?.readFile === 'function',
-              localRoots: anyCtx.mediaAccess?.localRoots ?? null,
-            },
-            mediaLocalRoots: anyCtx.mediaLocalRoots ?? null,
-            hasMediaReadFile: typeof anyCtx.mediaReadFile === 'function',
-            forceDocument: anyCtx.forceDocument ?? null,
-            silent: anyCtx.silent ?? null,
-            gifPlayback: anyCtx.gifPlayback ?? null,
-            cfgChannelsTwilioWhatsAppKeys: Object.keys(anyCtx.cfg?.channels?.['twilio-whatsapp'] ?? {}),
-          });
-          try {
-            const resolvedStateDirDiag = resolveStateDir();
-            const outboundDirDiag = path.join(resolvedStateDirDiag, 'media', 'twilio-whatsapp', 'outbound');
-            diagLog(ctx, '[twilio-whatsapp][sendMedia] resolved', {
-              resolvedStateDir: resolvedStateDirDiag,
-              outboundDir: outboundDirDiag,
-              outboundDirExists: fs.existsSync(outboundDirDiag),
-              HOME: process.env.HOME ?? null,
-              OPENCLAW_HOME: process.env.OPENCLAW_HOME ?? null,
-              OPENCLAW_STATE_DIR: process.env.OPENCLAW_STATE_DIR ?? null,
-            });
-          } catch (err) {
-            diagLog(ctx, '[twilio-whatsapp][sendMedia] resolved-failed', {
-              message: (err as Error).message,
-            });
-          }
-        }
-
-        const { cfg, to, text, mediaUrl } = ctx;
-        const channelCfg = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
-        if (!channelCfg) throw new Error('Twilio WhatsApp channel not configured');
-
-        const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
-        const authToken = process.env.TWILIO_AUTH_TOKEN || '';
-        if (!accountSid || !authToken) throw new Error('Twilio credentials not set');
-
-        const client = twilio(accountSid, authToken);
-        const from = toWhatsAppId(channelCfg.fromNumber);
-        const toWa = toWhatsAppId(to);
-
-        let stagedUrl: string | null = null;
-        if (mediaUrl) {
-          const outboundDir = path.join(resolveStateDir(), 'media', 'twilio-whatsapp', 'outbound');
-          stagedUrl = stageMedia(mediaUrl, outboundDir, channelCfg.webhookUrl);
-        }
-
-        const { messageId } = await sendChunkedWhatsApp({
-          client,
-          from,
-          to: toWa,
-          text,
-          mediaUrl: stagedUrl ?? undefined,
-        });
-        return { messageId: messageId ?? '' };
-      },
-    }),
-    resolveTarget: ({ to }: { to?: string }) => {
-      const normalized = to?.trim();
-      if (!normalized) return { ok: false, error: new Error('No target specified') };
-      return { ok: true, to: fromWhatsAppId(normalized) };
-    },
-  },
+  outbound: twilioWhatsAppOutbound,
 });
