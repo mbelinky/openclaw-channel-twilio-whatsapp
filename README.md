@@ -1,5 +1,10 @@
 # OpenClaw Twilio WhatsApp Channel
 
+> ⚠️ **Install via a coding agent — not via the standard OpenClaw install flow.**
+> This plugin is non-trivial to deploy: it requires a Twilio account, a public HTTPS URL, environment-variable secrets, exact webhook-URL matching, and gateway version `>= 2026.5.26`. The ClawHub one-click install will leave you with a half-configured plugin that silently 403s or 404s.
+>
+> **Preferred path:** point a coding agent (Claude Code, Cursor, etc.) at [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) and have it walk you through setup. The ClawHub listing exists for discoverability — not as a supported install path.
+
 A channel plugin for [OpenClaw](https://openclaw.rocks) that connects your AI agent to WhatsApp via the [Twilio Business API](https://www.twilio.com/docs/whatsapp).
 
 [![npm version](https://img.shields.io/npm/v/@srinathh/openclaw-channel-twilio-whatsapp.svg)](https://www.npmjs.com/package/@srinathh/openclaw-channel-twilio-whatsapp)
@@ -33,53 +38,15 @@ Pick this plugin when you need stability and compliance — for personal automat
 
 ## Installation
 
-This plugin is loaded by OpenClaw at runtime via npm. Add it to your `OpenClawInstance` CRD:
+See [**`AGENT_INSTRUCTIONS.md`**](AGENT_INSTRUCTIONS.md). Point a coding agent at it and have it walk you through the install — Twilio sender setup, public webhook URL, gateway-side plugin install, `openclaw.json` config, env-var secrets, and verification. The agent will collect the inputs from you, generate the right config for your deployment shape (Docker / Compose / k8s), and avoid the common foot-guns (legacy config shape, wrong container UID, etc.).
 
-```yaml
-apiVersion: openclaw.rocks/v1alpha1
-kind: OpenClawInstance
-metadata:
-  name: openclaw
-spec:
-  plugins:
-    - "@srinathh/openclaw-channel-twilio-whatsapp@latest"
-```
+The standard ClawHub one-click install is **not** sufficient for this plugin — the listing exists for discoverability. The plugin needs out-of-band configuration that ClawHub doesn't collect.
 
-Or in a non-Kubernetes deployment, install it into your OpenClaw runtime's `node_modules`:
+## Configuration reference
 
-```bash
-npm install @srinathh/openclaw-channel-twilio-whatsapp@latest
-```
+The agent install will write these for you — this section is for reference only.
 
-Then add it to the `plugins.load.paths` array in `openclaw.json` (see Configuration).
-
-## Configuration
-
-### `openclaw.json`
-
-```json
-{
-  "channels": {
-    "twilio-whatsapp": {
-      "enabled": true,
-      "dmPolicy": "allowlist",
-      "allowFrom": ["+14155551234", "+14155555678"],
-      "fromNumber": "+14155550000",
-      "webhookUrl": "https://your-public-host.example.com"
-    }
-  },
-  "plugins": {
-    "enabled": true,
-    "allow": ["@srinathh/openclaw-channel-twilio-whatsapp"],
-    "load": {
-      "paths": ["~/.openclaw/node_modules/@srinathh/openclaw-channel-twilio-whatsapp"]
-    },
-    "entries": {
-      "@srinathh/openclaw-channel-twilio-whatsapp": { "enabled": true }
-    }
-  }
-}
-```
+### `openclaw.json` — `channels.twilio-whatsapp`
 
 | Field | Required | Description |
 |---|---|---|
@@ -88,8 +55,12 @@ Then add it to the `plugins.load.paths` array in `openclaw.json` (see Configurat
 | `allowFrom` | when `allowlist` | Phone numbers in E.164 format (e.g. `+14155551234`) |
 | `fromNumber` | yes | Your Twilio WhatsApp sender in E.164 |
 | `webhookUrl` | yes | Public base URL where Twilio can reach OpenClaw — used both for signature validation and media serving |
+| `textChunkLimit` | no (default 1600) | Max characters per outbound message before splitting (Twilio rejects > 1600 with error 21617) |
+| `chunkMode` | no (default `length`) | `"length"` or `"newline"` — prefer paragraph boundaries when splitting |
 
 All phone numbers use **E.164 format without the `whatsapp:` prefix** — the plugin prepends it internally when calling Twilio.
+
+Modern OpenClaw gateways key plugin config by the manifest id `twilio-whatsapp` (not the npm package name) in `plugins.allow` / `plugins.entries`. The legacy `plugins.load.paths` field is no longer used — plugin install paths are auto-discovered. See `AGENT_INSTRUCTIONS.md` for the exact `openclaw.json` shape.
 
 ### Environment variables (secrets)
 
@@ -212,7 +183,7 @@ npm link @srinathh/openclaw-channel-twilio-whatsapp
 
 ## Compatibility
 
-- **OpenClaw**: requires `openclaw >= 2026.3.28` (uses the `plugin-sdk/*` subpath imports)
+- **OpenClaw gateway**: requires `>= 2026.5.26`. The plugin technically loads against `>= 2026.3.28` (when the `plugin-sdk/*` subpath imports were introduced), but earlier 2026.x gateways have a core-side `EACCES mkdir '/home/openclaw'` bug that silently breaks outbound media — text replies arrive, images don't.
 - **OpenClaw operator** (k8s): requires v0.30.0+ for the plugin peerDependency symlink
 - **Node.js**: 20+
 
