@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import twilio from 'twilio';
 import { createChatChannelPlugin } from 'openclaw/plugin-sdk/channel-core';
@@ -13,6 +14,7 @@ import { getTwilioWhatsAppRuntime } from './runtime.js';
 import { toWhatsAppId, fromWhatsAppId } from './util.js';
 import { stageMedia, createMediaServeHandler } from './media.js';
 import { createWebhookHandler, createHealthHandler, type InboundMessage } from './webhook.js';
+import { diagFlagEnabled, diagLog, DIAG_BOOT, DIAG_SEND } from './diag.js';
 
 const TWILIO_MAX_MESSAGE_LEN = 1600;
 
@@ -187,11 +189,65 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         // falls back to ~/.openclaw. os.homedir() is wrong in containers where
         // $HOME doesn't match the workspace owner (EACCES on mkdir), and the
         // channel's ctx.runtime is only a logging runtime (no .agent helpers).
-        const mediaBase = path.join(resolveStateDir(), 'media', 'twilio-whatsapp');
+        const resolvedStateDir = resolveStateDir();
+        const mediaBase = path.join(resolvedStateDir, 'media', 'twilio-whatsapp');
         const inboundDir = path.join(mediaBase, 'inbound');
         const outboundDir = path.join(mediaBase, 'outbound');
-        fs.mkdirSync(inboundDir, { recursive: true });
-        fs.mkdirSync(outboundDir, { recursive: true });
+
+        if (diagFlagEnabled(DIAG_BOOT)) {
+          let homedir: string | null = null;
+          try { homedir = os.homedir(); } catch { /* ignore */ }
+          diagLog(ctx, '[twilio-whatsapp][startAccount] pre-mkdir', {
+            resolvedStateDir,
+            HOME: process.env.HOME ?? null,
+            OPENCLAW_HOME: process.env.OPENCLAW_HOME ?? null,
+            OPENCLAW_STATE_DIR: process.env.OPENCLAW_STATE_DIR ?? null,
+            USER: process.env.USER ?? null,
+            USERPROFILE: process.env.USERPROFILE ?? null,
+            uid: process.getuid?.() ?? null,
+            _diag_homedir: homedir,
+            inboundDir,
+            outboundDir,
+            accountId: account.accountId,
+          });
+        }
+
+        try {
+          fs.mkdirSync(inboundDir, { recursive: true });
+          if (diagFlagEnabled(DIAG_BOOT)) {
+            diagLog(ctx, '[twilio-whatsapp][startAccount] mkdir ok', { path: inboundDir });
+          }
+        } catch (err) {
+          if (diagFlagEnabled(DIAG_BOOT)) {
+            const e = err as NodeJS.ErrnoException;
+            diagLog(ctx, '[twilio-whatsapp][startAccount] mkdir failed', {
+              path: inboundDir,
+              code: e.code ?? null,
+              errno: e.errno ?? null,
+              syscall: e.syscall ?? null,
+              message: e.message,
+            });
+          }
+          throw err;
+        }
+        try {
+          fs.mkdirSync(outboundDir, { recursive: true });
+          if (diagFlagEnabled(DIAG_BOOT)) {
+            diagLog(ctx, '[twilio-whatsapp][startAccount] mkdir ok', { path: outboundDir });
+          }
+        } catch (err) {
+          if (diagFlagEnabled(DIAG_BOOT)) {
+            const e = err as NodeJS.ErrnoException;
+            diagLog(ctx, '[twilio-whatsapp][startAccount] mkdir failed', {
+              path: outboundDir,
+              code: e.code ?? null,
+              errno: e.errno ?? null,
+              syscall: e.syscall ?? null,
+              message: e.message,
+            });
+          }
+          throw err;
+        }
 
         const allowFrom = new Set((allowFromList || []).map((p: string) => p.replace(/^\+?/, '+')));
 
@@ -325,7 +381,45 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         });
         return { messageId: messageId ?? '' };
       },
-      sendMedia: async ({ cfg, to, text, mediaUrl }) => {
+      sendMedia: async (ctx) => {
+        if (diagFlagEnabled(DIAG_SEND)) {
+          const anyCtx = ctx as any;
+          diagLog(ctx, '[twilio-whatsapp][sendMedia] called', {
+            to: anyCtx.to ?? null,
+            accountId: anyCtx.accountId ?? null,
+            threadId: anyCtx.threadId ?? null,
+            replyToId: anyCtx.replyToId ?? null,
+            mediaUrl: anyCtx.mediaUrl ?? null,
+            mediaAccess: {
+              hasReadFile: typeof anyCtx.mediaAccess?.readFile === 'function',
+              localRoots: anyCtx.mediaAccess?.localRoots ?? null,
+            },
+            mediaLocalRoots: anyCtx.mediaLocalRoots ?? null,
+            hasMediaReadFile: typeof anyCtx.mediaReadFile === 'function',
+            forceDocument: anyCtx.forceDocument ?? null,
+            silent: anyCtx.silent ?? null,
+            gifPlayback: anyCtx.gifPlayback ?? null,
+            cfgChannelsTwilioWhatsAppKeys: Object.keys(anyCtx.cfg?.channels?.['twilio-whatsapp'] ?? {}),
+          });
+          try {
+            const resolvedStateDirDiag = resolveStateDir();
+            const outboundDirDiag = path.join(resolvedStateDirDiag, 'media', 'twilio-whatsapp', 'outbound');
+            diagLog(ctx, '[twilio-whatsapp][sendMedia] resolved', {
+              resolvedStateDir: resolvedStateDirDiag,
+              outboundDir: outboundDirDiag,
+              outboundDirExists: fs.existsSync(outboundDirDiag),
+              HOME: process.env.HOME ?? null,
+              OPENCLAW_HOME: process.env.OPENCLAW_HOME ?? null,
+              OPENCLAW_STATE_DIR: process.env.OPENCLAW_STATE_DIR ?? null,
+            });
+          } catch (err) {
+            diagLog(ctx, '[twilio-whatsapp][sendMedia] resolved-failed', {
+              message: (err as Error).message,
+            });
+          }
+        }
+
+        const { cfg, to, text, mediaUrl } = ctx;
         const channelCfg = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
         if (!channelCfg) throw new Error('Twilio WhatsApp channel not configured');
 
