@@ -4,6 +4,22 @@ import path from 'path';
 import crypto from 'crypto';
 import { IncomingMessage, ServerResponse } from 'http';
 import mime from 'mime-types';
+import { diagFlagEnabled, DIAG_STAGE } from './diag.js';
+
+function diagStage(event: string, data?: unknown): void {
+  if (!diagFlagEnabled(DIAG_STAGE)) return;
+  if (data === undefined) {
+    console.error(`[twilio-whatsapp][stageMedia] ${event}`);
+  } else {
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(data);
+    } catch {
+      serialized = '[unserializable diagnostic payload]';
+    }
+    console.error(`[twilio-whatsapp][stageMedia] ${event} ${serialized}`);
+  }
+}
 
 export function downloadTwilioMedia(
   url: string,
@@ -42,17 +58,43 @@ export function stageMedia(
   outboundDir: string,
   webhookUrl: string,
 ): string | null {
+  diagStage('entry', { localPath, outboundDir, webhookUrl });
   const srcPath = path.resolve(localPath);
-  if (!fs.existsSync(srcPath) || !fs.statSync(srcPath).isFile()) {
+  diagStage('resolved', { srcPath });
+  const exists = fs.existsSync(srcPath);
+  if (diagFlagEnabled(DIAG_STAGE)) {
+    let isFile: boolean | null = null;
+    if (exists) {
+      try { isFile = fs.statSync(srcPath).isFile(); } catch { /* ignore */ }
+    }
+    diagStage('exists-check', { exists, _diag_isFile: isFile });
+  }
+  if (!exists || !fs.statSync(srcPath).isFile()) {
     return null;
   }
   if (path.dirname(srcPath) === path.resolve(outboundDir)) {
+    diagStage('same-dir-passthrough', { srcPath });
     return `${webhookUrl}/webhook/twilio-whatsapp/media/${path.basename(srcPath)}`;
   }
   const ext = path.extname(srcPath);
   const filename = `${crypto.randomUUID().replace(/-/g, '')}${ext}`;
   const destPath = path.join(outboundDir, filename);
-  fs.copyFileSync(srcPath, destPath);
+  diagStage('destPath', { destPath });
+  diagStage('copying');
+  try {
+    fs.copyFileSync(srcPath, destPath);
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    diagStage('copy-failed', {
+      code: e.code ?? null,
+      errno: e.errno ?? null,
+      syscall: e.syscall ?? null,
+      path: (e as { path?: string }).path ?? null,
+      message: e.message,
+    });
+    throw err;
+  }
+  diagStage('copied');
   return `${webhookUrl}/webhook/twilio-whatsapp/media/${filename}`;
 }
 
