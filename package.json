@@ -1,6 +1,6 @@
 {
   "name": "@srinathh/openclaw-channel-twilio-whatsapp",
-  "version": "2.1.6",
+  "version": "2.1.7",
   "license": "Apache-2.0",
   "description": "Twilio WhatsApp channel plugin for OpenClaw",
   "author": "srinathh",
@@ -46,7 +46,7 @@
       "pluginSdkVersion": "2026.4.29"
     },
     "release": {
-      "publishToClawHub": true,
+      "publishToClawHub": false,
       "publishToNpm": true
     }
   },
