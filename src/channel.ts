@@ -319,6 +319,7 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
 
         const unregisterMedia = registerPluginHttpRoute({
           path: '/webhook/twilio-whatsapp/media',
+          match: 'prefix',
           auth: 'plugin',
           replaceExisting: true,
           pluginId: 'twilio-whatsapp',
