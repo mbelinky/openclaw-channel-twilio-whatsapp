@@ -16,12 +16,20 @@ import { emitTimingEvent, logTiming } from './diagnostics.js';
 export interface WebhookConfig {
   accountSid: string;
   authToken: string;
-  fromNumber: string;
   webhookUrl: string;
   webhookPaths?: string[];
+  bodyMaxBytes?: number;
+  accounts: WebhookAccountConfig[];
+  log?: WebhookLogger;
+}
+
+const DEFAULT_WEBHOOK_BODY_MAX_BYTES = 256 * 1024;
+
+export interface WebhookAccountConfig {
+  accountId: string;
+  fromNumber: string;
   statusCallbackUrl?: string;
   dmPolicy?: 'allowlist' | 'open';
-  bodyMaxBytes?: number;
   allowFrom: Set<string>;
   inboundDir: string;
   mediaMaxBytes?: number;
@@ -29,12 +37,10 @@ export interface WebhookConfig {
   typingIndicators?: boolean;
   typingTimeoutMs?: number;
   sendTypingIndicator?: (messageSid: string) => Promise<boolean>;
-  log?: WebhookLogger;
 }
 
-const DEFAULT_WEBHOOK_BODY_MAX_BYTES = 256 * 1024;
-
 export interface InboundMessage {
+  accountId: string;
   senderId: string;
   senderName: string;
   text: string;
@@ -44,7 +50,7 @@ export interface InboundMessage {
   dryRunDelivery?: boolean;
 }
 
-export type DispatchFn = (msg: InboundMessage) => Promise<void> | void;
+export type DispatchFn = (msg: InboundMessage, account: WebhookAccountConfig) => Promise<void> | void;
 
 export interface WebhookLogger {
   info?: (message: string) => void;
@@ -81,7 +87,7 @@ function validateTwilioSignature(
   authToken: string,
   webhookUrl: string,
   routePath: string | string[],
-  signedUrl?: string,
+  signedUrl?: string | string[],
 ): boolean {
   const signature = firstHeader(req.headers['x-twilio-signature']);
   const candidates = new Set<string>();
@@ -91,8 +97,8 @@ function validateTwilioSignature(
     const forwarded = forwardedUrl(req, path);
     if (forwarded) candidates.add(forwarded);
   }
-  if (signedUrl) {
-    candidates.add(`${signedUrl.replace(/\?.*$/, '')}${requestQuery(req)}`);
+  for (const url of Array.isArray(signedUrl) ? signedUrl : signedUrl ? [signedUrl] : []) {
+    candidates.add(`${url.replace(/\?.*$/, '')}${requestQuery(req)}`);
   }
   for (const candidate of candidates) {
     if (twilio.validateRequest(authToken, signature || '', candidate, params)) {
@@ -102,9 +108,17 @@ function validateTwilioSignature(
   return false;
 }
 
-function isSenderAllowed(config: Pick<WebhookConfig, 'dmPolicy' | 'allowFrom'>, senderPhone: string): boolean {
+function isSenderAllowed(config: Pick<WebhookAccountConfig, 'dmPolicy' | 'allowFrom'>, senderPhone: string): boolean {
   if (config.dmPolicy === 'open') return true;
   return config.allowFrom.has(senderPhone);
+}
+
+function findAccountByRecipient(
+  accounts: WebhookAccountConfig[],
+  recipient: string,
+): WebhookAccountConfig | undefined {
+  const recipientPhone = fromWhatsAppId(recipient).replace(/^\+?/, '+');
+  return accounts.find((account) => fromWhatsAppId(account.fromNumber).replace(/^\+?/, '+') === recipientPhone);
 }
 
 export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn) {
@@ -165,17 +179,38 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
         return;
       }
 
-      const recipientPhone = fromWhatsAppId(to);
-      const configuredPhone = fromWhatsAppId(config.fromNumber);
-      if (
-        !from ||
-        !to ||
-        recipientPhone !== configuredPhone ||
-        !isSenderAllowed(config, senderPhone)
-      ) {
+      const account = to ? findAccountByRecipient(config.accounts, to) : undefined;
+      if (!from || !to || !account) {
         logTiming(config.log, 'webhook_rejected', {
           messageSid,
           senderHash,
+          reason: account ? 'forbidden' : 'unknown_recipient',
+          durationMs: Date.now() - startedAt,
+        });
+        emitTimingEvent({
+          type: 'webhook.error',
+          channel: 'twilio-whatsapp',
+          updateType: 'inbound',
+          chatId: senderHash,
+          error: account ? 'forbidden' : 'unknown_recipient',
+        });
+        if (!account && to) {
+          config.log?.warn?.(
+            `[twilio-whatsapp] inbound rejected unknown To=${stableIdHash(fromWhatsAppId(to))} messageSid=${
+              messageSid || 'unknown'
+            }`,
+          );
+        }
+        res.writeHead(403);
+        res.end('Forbidden');
+        return;
+      }
+
+      if (!isSenderAllowed(account, senderPhone)) {
+        logTiming(config.log, 'webhook_rejected', {
+          messageSid,
+          senderHash,
+          accountId: account.accountId,
           reason: 'forbidden',
           durationMs: Date.now() - startedAt,
         });
@@ -203,13 +238,14 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
       const profileName = params.ProfileName || senderPhone;
       const dryRunDelivery = firstHeader(req.headers['x-openclaw-dry-run-delivery']) === '1';
 
-      if (config.typingIndicators === true && messageSid && config.sendTypingIndicator) {
+      if (account.typingIndicators === true && messageSid && account.sendTypingIndicator) {
         const typingStartedAt = Date.now();
-        logTiming(config.log, 'typing_start', { messageSid, senderHash });
-        config.sendTypingIndicator(messageSid).then((ok) => {
+        logTiming(config.log, 'typing_start', { messageSid, senderHash, accountId: account.accountId });
+        account.sendTypingIndicator(messageSid).then((ok) => {
           logTiming(config.log, ok ? 'typing_done' : 'typing_error', {
             messageSid,
             senderHash,
+            accountId: account.accountId,
             durationMs: Date.now() - typingStartedAt,
           });
           if (!ok) {
@@ -221,6 +257,7 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
           logTiming(config.log, 'typing_error', {
             messageSid,
             senderHash,
+            accountId: account.accountId,
             durationMs: Date.now() - typingStartedAt,
             error: error instanceof Error ? error.name || 'Error' : 'unknown',
           });
@@ -248,11 +285,11 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
             });
             try {
               const buffer = await downloadTwilioMedia(mediaUrl, config.accountSid, config.authToken, {
-                maxBytes: config.mediaMaxBytes,
-                timeoutMs: config.mediaTimeoutMs,
+                maxBytes: account.mediaMaxBytes,
+                timeoutMs: account.mediaTimeoutMs,
               });
               const ext = getExtensionForType(contentType);
-              const filePath = path.join(config.inboundDir, `${messageSid}-${i}${ext}`);
+              const filePath = path.join(account.inboundDir, `${messageSid}-${i}${ext}`);
               fs.writeFileSync(filePath, buffer);
               mediaPaths.push(filePath);
               content += `\n[${contentType}: ${filePath}]`;
@@ -290,6 +327,7 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
         const dispatchScheduledAt = Date.now();
         logTiming(config.log, 'dispatch_scheduled', { messageSid, senderHash });
         const dispatchResult = dispatch({
+          accountId: account.accountId,
           senderId: senderPhone,
           senderName: profileName,
           text: content.trim(),
@@ -297,7 +335,7 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
           mediaPath: mediaPaths[0],
           mediaPaths: mediaPaths.length > 0 ? mediaPaths : undefined,
           dryRunDelivery,
-        });
+        }, account);
         if (dispatchResult && typeof dispatchResult.then === 'function') {
           dispatchResult.then(
             () => {
@@ -389,7 +427,7 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
 }
 
 export function createStatusCallbackHandler(
-  config: Pick<WebhookConfig, 'authToken' | 'webhookUrl' | 'statusCallbackUrl' | 'bodyMaxBytes' | 'log'>,
+  config: Pick<WebhookConfig, 'authToken' | 'webhookUrl' | 'bodyMaxBytes' | 'accounts' | 'log'>,
 ) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -403,7 +441,7 @@ export function createStatusCallbackHandler(
         config.authToken,
         config.webhookUrl,
         '/webhook/twilio-whatsapp/status',
-        config.statusCallbackUrl,
+        config.accounts.map((account) => account.statusCallbackUrl).filter(Boolean) as string[],
       );
       if (!valid) {
         res.writeHead(403);
@@ -414,7 +452,14 @@ export function createStatusCallbackHandler(
       const status = params.MessageStatus || params.SmsStatus || 'unknown';
       const errorCode = params.ErrorCode;
       const errorMessage = params.ErrorMessage;
-      const line = `[twilio-whatsapp] status messageSid=${messageSid} status=${status}${
+      const query = new URLSearchParams(requestQuery(req).replace(/^\?/, ''));
+      const accountIdFromQuery = query.get('accountId') || undefined;
+      const account =
+        (accountIdFromQuery
+          ? config.accounts.find((entry) => entry.accountId === accountIdFromQuery)
+          : undefined) || findAccountByRecipient(config.accounts, params.From || '');
+      const accountField = account ? ` accountId=${account.accountId}` : ' accountId=unknown';
+      const line = `[twilio-whatsapp] status${accountField} messageSid=${messageSid} status=${status}${
         errorCode ? ` errorCode=${errorCode}` : ''
       }${errorMessage ? ` error=${errorMessage}` : ''}`;
       if (status === 'failed' || status === 'undelivered') {

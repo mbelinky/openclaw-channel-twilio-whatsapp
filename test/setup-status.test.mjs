@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { twilioWhatsAppPlugin } from '../dist/channel.js';
+import { resolveTwilioWhatsAppAccount, twilioWhatsAppPlugin } from '../dist/channel.js';
 
 function withTwilioEnv(fn) {
   const oldSid = process.env.TWILIO_ACCOUNT_SID;
@@ -24,9 +24,13 @@ test('setup status requires allowFrom when dmPolicy is allowlist', () => {
         channels: {
           'twilio-whatsapp': {
             enabled: true,
-            dmPolicy: 'allowlist',
-            fromNumber: '+14155550000',
             webhookUrl: 'https://twilio.example.test',
+            accounts: {
+              vinalia: {
+                dmPolicy: 'allowlist',
+                fromNumber: '+14155550000',
+              },
+            },
           },
         },
       },
@@ -44,9 +48,13 @@ test('setup status allows empty allowFrom only when dmPolicy is open', () => {
         channels: {
           'twilio-whatsapp': {
             enabled: true,
-            dmPolicy: 'open',
-            fromNumber: '+14155550000',
             webhookUrl: 'https://twilio.example.test',
+            accounts: {
+              mkps: {
+                dmPolicy: 'open',
+                fromNumber: '+447427807929',
+              },
+            },
           },
         },
       },
@@ -54,4 +62,69 @@ test('setup status allows empty allowFrom only when dmPolicy is open', () => {
   );
 
   assert.equal(status.status, 'configured');
+});
+
+test('runtime config parsing rejects legacy top-level sender shape with migration error', () => {
+  assert.throws(
+    () =>
+      withTwilioEnv(() =>
+        resolveTwilioWhatsAppAccount({
+          channels: {
+            'twilio-whatsapp': {
+              enabled: true,
+              dmPolicy: 'allowlist',
+              allowFrom: ['+14155551234'],
+              fromNumber: '+14155550000',
+              webhookUrl: 'https://twilio.example.test',
+            },
+          },
+        }),
+      ),
+    /v3\.0\.0 requires account-scoped senders.*accounts\.<accountId>/,
+  );
+});
+
+test('outbound adapter selects the fromNumber for the requested accountId', async () => {
+  const calls = [];
+  const cfg = {
+    channels: {
+      'twilio-whatsapp': {
+        enabled: true,
+        webhookUrl: 'https://twilio.example.test',
+        accounts: {
+          vinalia: {
+            dmPolicy: 'allowlist',
+            allowFrom: ['+14155551234'],
+            fromNumber: '+14845645168',
+          },
+          mkps: {
+            dmPolicy: 'open',
+            fromNumber: '+447427807929',
+          },
+        },
+      },
+    },
+  };
+
+  await withTwilioEnv(() =>
+    twilioWhatsAppPlugin.outbound.sendText({
+      cfg,
+      accountId: 'mkps',
+      to: '+447700900123',
+      text: 'hola',
+      deps: {
+        createTwilioClient: () => ({
+          messages: {
+            create: async (payload) => {
+              calls.push(payload);
+              return { sid: 'SMmkps' };
+            },
+          },
+        }),
+      },
+    }),
+  );
+
+  assert.equal(calls[0].from, 'whatsapp:+447427807929');
+  assert.equal(calls[0].to, 'whatsapp:+447700900123');
 });

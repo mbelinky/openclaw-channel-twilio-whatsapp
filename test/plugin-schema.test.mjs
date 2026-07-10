@@ -89,27 +89,9 @@ function validate(schemaNode, value, path = '$') {
   return errors;
 }
 
-test('channel schema accepts prod-shaped config with group and delivery keys', () => {
+test('channel schema accepts multi-account prod-shaped config with group and delivery keys', () => {
   const errors = validate(schema, {
     enabled: true,
-    dmPolicy: 'allowlist',
-    allowFrom: ['+14155551234', '+14155555678'],
-    groupPolicy: 'disabled',
-    groupAllowFrom: ['+14155551234', 'accessGroup:operators'],
-    groups: {
-      '*': {
-        enabled: false,
-        requireMention: true,
-        allowFrom: ['+14155551234'],
-        groupPolicy: 'disabled',
-        systemPrompt: 'ignored by the Twilio WhatsApp channel',
-        tools: ['ignored-tool'],
-        toolsBySender: {
-          '+14155551234': ['ignored-tool'],
-        },
-      },
-    },
-    fromNumber: '+14155550000',
     webhookUrl: 'https://twilio.example.test',
     statusCallbackUrl: 'https://twilio.example.test/webhook/twilio-whatsapp/status',
     sendTimeoutMs: 20000,
@@ -121,16 +103,58 @@ test('channel schema accepts prod-shaped config with group and delivery keys', (
     processingAckText: '',
     processingAckDelayMs: 10000,
     dmHistoryLimit: 2,
+    accounts: {
+      vinalia: {
+        dmPolicy: 'allowlist',
+        allowFrom: ['+14155551234', '+14155555678'],
+        groupPolicy: 'disabled',
+        groupAllowFrom: ['+14155551234', 'accessGroup:operators'],
+        groups: {
+          '*': {
+            enabled: false,
+            requireMention: true,
+            allowFrom: ['+14155551234'],
+            groupPolicy: 'disabled',
+            systemPrompt: 'ignored by the Twilio WhatsApp channel',
+            tools: ['ignored-tool'],
+            toolsBySender: {
+              '+14155551234': ['ignored-tool'],
+            },
+          },
+        },
+        fromNumber: '+14155550000',
+      },
+      mkps: {
+        dmPolicy: 'open',
+        fromNumber: '+447427807929',
+        mediaMaxMb: 10,
+      },
+    },
   });
 
   assert.deepEqual(errors, []);
 });
 
-test('channel schema still rejects unknown channel config keys', () => {
+test('channel schema rejects legacy top-level sender config keys', () => {
   const errors = validate(schema, {
     enabled: true,
     fromNumber: '+14155550000',
     webhookUrl: 'https://twilio.example.test',
+    accounts: {},
+  });
+
+  assert.ok(errors.some((error) => error.includes('additional property fromNumber')));
+});
+
+test('channel schema still rejects unknown channel config keys', () => {
+  const errors = validate(schema, {
+    enabled: true,
+    webhookUrl: 'https://twilio.example.test',
+    accounts: {
+      vinalia: {
+        fromNumber: '+14155550000',
+      },
+    },
     unexpected: true,
   });
 

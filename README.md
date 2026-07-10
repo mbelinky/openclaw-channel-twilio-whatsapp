@@ -1,7 +1,7 @@
 # OpenClaw Twilio WhatsApp Channel
 
 > ⚠️ **Install via a coding agent — not via the standard OpenClaw install flow.**
-> This plugin is non-trivial to deploy: it requires a Twilio account, a public HTTPS URL, environment-variable secrets, exact webhook-URL matching, and gateway version `>= 2026.5.26`. The ClawHub one-click install will leave you with a half-configured plugin that silently 403s or 404s.
+> This plugin is non-trivial to deploy: it requires a Twilio account, a public HTTPS URL, environment-variable secrets, exact webhook-URL matching, and gateway version `>= 2026.6.11`. The ClawHub one-click install will leave you with a half-configured plugin that silently 403s or 404s.
 >
 > **Preferred path:** point a coding agent (Claude Code, Cursor, etc.) at [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) and have it walk you through setup. The ClawHub listing exists for discoverability — not as a supported install path.
 
@@ -29,7 +29,8 @@ Pick this plugin when you need stability and compliance — for personal automat
 
 - **Inbound webhooks** via OpenClaw's gateway (no separate HTTP server)
 - **Twilio signature validation** on every inbound request
-- **Allowlist enforcement** so only approved phone numbers can talk to your agent
+- **Multi-sender accounts** so one Twilio credential set can serve multiple WhatsApp senders bound to different OpenClaw agents
+- **Per-account allowlist enforcement** so each sender controls who can talk to its agent
 - **Inbound media download** with redirect-following Basic Auth
 - **Outbound media staging** — local files are served back to Twilio via UUID-randomized URLs
 - **Message chunking** at Twilio's 1600-char limit
@@ -51,14 +52,15 @@ The agent install will write these for you — this section is for reference onl
 | Field | Required | Description |
 |---|---|---|
 | `enabled` | yes | Activate the channel |
-| `dmPolicy` | yes | `"allowlist"` (only `allowFrom` numbers) or `"open"` (anyone) |
-| `allowFrom` | when `allowlist` | Phone numbers in E.164 format (e.g. `+14155551234`) |
-| `groupPolicy` | no | Accepted for shared OpenClaw config compatibility only; ignored at runtime |
-| `groupAllowFrom` | no | Accepted for shared OpenClaw config compatibility only; ignored at runtime |
-| `groups` | no | Accepted for shared OpenClaw config compatibility only; ignored at runtime |
-| `fromNumber` | yes | Your Twilio WhatsApp sender in E.164 |
 | `webhookUrl` | yes | Public base URL where Twilio can reach OpenClaw — used both for signature validation and media serving |
 | `statusCallbackUrl` | no (default `{webhookUrl}/webhook/twilio-whatsapp/status`) | Twilio delivery status callback URL |
+| `accounts` | yes | Map of OpenClaw account ids to WhatsApp senders |
+| `accounts.<id>.fromNumber` | yes | Twilio WhatsApp sender in E.164 |
+| `accounts.<id>.dmPolicy` | yes | `"allowlist"` (only `allowFrom` numbers) or `"open"` (anyone) |
+| `accounts.<id>.allowFrom` | when `allowlist` | Phone numbers in E.164 format (e.g. `+14155551234`) |
+| `accounts.<id>.groupPolicy` | no | Accepted for shared OpenClaw config compatibility only; ignored at runtime |
+| `accounts.<id>.groupAllowFrom` | no | Accepted for shared OpenClaw config compatibility only; ignored at runtime |
+| `accounts.<id>.groups` | no | Accepted for shared OpenClaw config compatibility only; ignored at runtime |
 | `sendTimeoutMs` | no (default 20000) | Per-attempt Twilio send timeout in milliseconds |
 | `sendRetries` | no (default 3) | Maximum Twilio send attempts for retryable transport errors |
 | `textChunkLimit` | no (default 1600) | Max characters per outbound message before splitting (Twilio rejects > 1600 with error 21617) |
@@ -71,7 +73,47 @@ The agent install will write these for you — this section is for reference onl
 
 All phone numbers use **E.164 format without the `whatsapp:` prefix** — the plugin prepends it internally when calling Twilio.
 
-Group config keys are accepted only so shared OpenClaw configs can load cleanly. Twilio's WhatsApp Business API does not expose group chat webhooks, so inbound access control remains DM-only: `dmPolicy: "allowlist"` plus `allowFrom`.
+Group config keys are accepted only so shared OpenClaw configs can load cleanly. Twilio's WhatsApp Business API does not expose group chat webhooks, so inbound access control remains DM-only: `accounts.<id>.dmPolicy: "allowlist"` plus `accounts.<id>.allowFrom`.
+
+### v3 migration example
+
+Version 3 is a clean cutover. Legacy top-level `fromNumber`, `dmPolicy`, and `allowFrom` are invalid; move them under `accounts.<accountId>`.
+
+```json
+{
+  "channels": {
+    "twilio-whatsapp": {
+      "enabled": true,
+      "webhookUrl": "https://hooks.canbrull.com",
+      "statusCallbackUrl": "https://hooks.canbrull.com/webhook/twilio-whatsapp/status",
+      "sendTimeoutMs": 20000,
+      "sendRetries": 3,
+      "textChunkLimit": 1600,
+      "mediaMaxMb": 25,
+      "typingIndicators": false,
+      "typingTimeoutMs": 5000,
+      "processingAckText": "",
+      "processingAckDelayMs": 12000,
+      "dmHistoryLimit": 2,
+      "accounts": {
+        "vinalia": {
+          "fromNumber": "+14845645168",
+          "dmPolicy": "allowlist",
+          "allowFrom": ["+14155551234"]
+        },
+        "mkps": {
+          "fromNumber": "+447427807929",
+          "dmPolicy": "open"
+        }
+      }
+    }
+  },
+  "bindings": [
+    { "agentId": "vinalia", "match": { "channel": "twilio-whatsapp", "accountId": "vinalia" } },
+    { "agentId": "mkps", "match": { "channel": "twilio-whatsapp", "accountId": "mkps" } }
+  ]
+}
+```
 
 Modern OpenClaw gateways key plugin config by the manifest id `twilio-whatsapp` (not the npm package name) in `plugins.allow` / `plugins.entries`. The legacy `plugins.load.paths` field is no longer used — plugin install paths are auto-discovered. See `AGENT_INSTRUCTIONS.md` for the exact `openclaw.json` shape.
 
@@ -106,7 +148,7 @@ curl https://<your-host>/webhook/twilio-whatsapp/health
 
 ### 4. Send a test message
 
-WhatsApp the number you registered in `fromNumber` from a phone in your `allowFrom` list. The agent should reply.
+WhatsApp the number registered in `accounts.<id>.fromNumber`. The plugin routes inbound messages to the account whose sender matches Twilio's `To` value, then OpenClaw bindings route by `{ channel, accountId }`.
 
 ## Architecture
 
@@ -149,7 +191,7 @@ Outbound media (agent → Twilio):
 
 1. Twilio POSTs `application/x-www-form-urlencoded` body with `Body`, `From`, `MessageSid`, `NumMedia`, etc.
 2. Plugin validates `X-Twilio-Signature` against `webhookUrl + path` — rejects with `403` on mismatch
-3. Plugin checks `To` against the configured sender and `From` against `dmPolicy` / `allowFrom` (with `whatsapp:` prefix stripped) — rejects with `403` if either check fails
+3. Plugin matches Twilio `To` against `accounts.<id>.fromNumber` (with `whatsapp:` prefix stripped), then checks `From` against that account's `dmPolicy` / `allowFrom` — rejects with `403` if either check fails
 4. Plugin **immediately** responds with empty TwiML (`<Response/>`) so Twilio doesn't time out
 5. If enabled, plugin sends a Twilio typing indicator for the inbound message
 6. Plugin downloads any inbound media (async, after responding)
@@ -197,7 +239,7 @@ npm link @srinathh/openclaw-channel-twilio-whatsapp
 
 ## Compatibility
 
-- **OpenClaw gateway**: requires `>= 2026.5.26` for the Plugin SDK surfaces used here and for the gateway-side media directory fix. Earlier 2026.x gateways can fail to load the plugin or silently break outbound media.
+- **OpenClaw gateway**: targets `>= 2026.6.11` for account-scoped channel bindings. Earlier 2026.x gateways can fail to load the plugin or route multi-account inbound messages incorrectly.
 - **OpenClaw operator** (k8s): requires v0.30.0+ for the plugin peerDependency symlink
 - **Node.js**: 20+
 
@@ -206,7 +248,7 @@ npm link @srinathh/openclaw-channel-twilio-whatsapp
 - **DMs only** — no group chat (Twilio's WhatsApp Business API doesn't support groups). `groupPolicy`, `groupAllowFrom`, and `groups` are accepted as no-op compatibility keys only.
 - **No reactions** — WhatsApp reactions are not exposed through this plugin
 - **No threaded replies** — WhatsApp threading not exposed by Twilio
-- **Single account** — multiple Twilio accounts aren't supported in this version
+- **Single Twilio credential set** — multiple WhatsApp senders are supported through `accounts`, but all accounts share `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN`.
 
 ## License
 

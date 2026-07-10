@@ -3,7 +3,7 @@
   "kind": "channel",
   "name": "Twilio WhatsApp Channel",
   "description": "WhatsApp channel via Twilio Business API",
-  "version": "2.1.8",
+  "version": "3.0.0",
   "channels": ["twilio-whatsapp"],
   "channelEnvVars": {
     "twilio-whatsapp": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]
@@ -24,128 +24,172 @@
             "default": false,
             "description": "Activate the Twilio WhatsApp channel."
           },
-          "dmPolicy": {
-            "type": "string",
-            "enum": ["allowlist", "open"],
-            "default": "allowlist",
-            "description": "Restrict who can DM the agent. 'allowlist' requires phone numbers in allowFrom; 'open' lets anyone with the bot number talk."
-          },
-          "allowFrom": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "pattern": "^\\+[1-9]\\d{1,14}$"
-            },
-            "description": "Phone numbers in E.164 format (e.g. +14155551234) allowed to DM the agent when dmPolicy is 'allowlist'."
-          },
-          "groupPolicy": {
-            "type": "string",
-            "enum": ["disabled", "allowlist", "open"],
-            "default": "disabled",
-            "description": "Compatibility with common OpenClaw group config. Twilio WhatsApp Business API is DM-only, so this plugin ignores group settings at runtime."
-          },
-          "groupAllowFrom": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Compatibility with common OpenClaw group sender allowlists. Ignored because Twilio WhatsApp Business API does not deliver group messages."
-          },
-          "groups": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "object",
-              "additionalProperties": true,
-              "properties": {
-                "enabled": {
-                  "type": "boolean"
-                },
-                "requireMention": {
-                  "type": "boolean"
-                },
-                "allowFrom": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "groupPolicy": {
-                  "type": "string",
-                  "enum": ["disabled", "allowlist", "open"]
-                }
-              }
-            },
-            "description": "Compatibility with common OpenClaw per-group config. Ignored because Twilio WhatsApp Business API does not support groups."
-          },
-          "fromNumber": {
-            "type": "string",
-            "pattern": "^\\+[1-9]\\d{1,14}$",
-            "description": "Twilio WhatsApp sender number in E.164 format."
-          },
           "webhookUrl": {
             "type": "string",
             "format": "uri",
             "description": "Public base URL where Twilio reaches OpenClaw — used for signature validation and outbound media serving."
           },
+          "defaultAccount": {
+            "type": "string",
+            "description": "Optional default account id used when an outbound send omits accountId."
+          },
+          "accounts": {
+            "type": "object",
+            "description": "Map of OpenClaw account ids to Twilio WhatsApp sender configs.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "fromNumber": {
+                  "type": "string",
+                  "pattern": "^\\+[1-9]\\d{1,14}$",
+                  "description": "Twilio WhatsApp sender number in E.164 format."
+                },
+                "dmPolicy": {
+                  "type": "string",
+                  "enum": ["allowlist", "open"],
+                  "default": "allowlist",
+                  "description": "Restrict who can DM this account. 'allowlist' requires phone numbers in allowFrom; 'open' lets anyone with the sender number talk."
+                },
+                "allowFrom": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^\\+[1-9]\\d{1,14}$"
+                  },
+                  "description": "Phone numbers in E.164 format allowed to DM this account when dmPolicy is 'allowlist'."
+                },
+                "groupPolicy": {
+                  "type": "string",
+                  "enum": ["disabled", "allowlist", "open"],
+                  "default": "disabled",
+                  "description": "Compatibility with common OpenClaw group config. Twilio WhatsApp Business API is DM-only, so this plugin ignores group settings at runtime."
+                },
+                "groupAllowFrom": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Compatibility with common OpenClaw group sender allowlists. Ignored because Twilio WhatsApp Business API does not deliver group messages."
+                },
+                "groups": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "description": "Compatibility with common OpenClaw per-group config. Ignored because Twilio WhatsApp Business API does not support groups."
+                },
+                "statusCallbackUrl": {
+                  "type": "string",
+                  "format": "uri",
+                  "description": "Optional account-specific Twilio delivery status callback URL."
+                },
+                "sendTimeoutMs": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "sendRetries": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "textChunkLimit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1600
+                },
+                "mediaMaxMb": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "typingIndicators": {
+                  "type": "boolean"
+                },
+                "typingTimeoutMs": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "processingAckText": {
+                  "type": "string"
+                },
+                "processingAckDelayMs": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "dmHistoryLimit": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": ["fromNumber"]
+            }
+          },
           "statusCallbackUrl": {
             "type": "string",
             "format": "uri",
-            "description": "Optional Twilio delivery status callback URL. Defaults to {webhookUrl}/webhook/twilio-whatsapp/status."
+            "description": "Optional shared Twilio delivery status callback URL. Defaults to {webhookUrl}/webhook/twilio-whatsapp/status."
           },
           "sendTimeoutMs": {
             "type": "integer",
             "minimum": 1,
             "default": 20000,
-            "description": "Per-attempt Twilio send timeout in milliseconds."
+            "description": "Default per-attempt Twilio send timeout in milliseconds."
           },
           "sendRetries": {
             "type": "integer",
             "minimum": 1,
             "default": 3,
-            "description": "Maximum Twilio send attempts for retryable transport errors."
+            "description": "Default maximum Twilio send attempts for retryable transport errors."
           },
           "textChunkLimit": {
             "type": "integer",
             "minimum": 1,
             "maximum": 1600,
             "default": 1600,
-            "description": "Maximum WhatsApp text characters per Twilio message."
+            "description": "Default maximum WhatsApp text characters per Twilio message."
           },
           "mediaMaxMb": {
             "type": "integer",
             "minimum": 1,
             "default": 25,
-            "description": "Maximum inbound media size in megabytes."
+            "description": "Default maximum inbound media size in megabytes."
           },
           "typingIndicators": {
             "type": "boolean",
             "default": false,
-            "description": "Send a Twilio WhatsApp typing indicator after accepting inbound messages. Disabled by default because Twilio marks this feature as not HIPAA/PCI eligible."
+            "description": "Default typing-indicator setting for accounts."
           },
           "typingTimeoutMs": {
             "type": "integer",
             "minimum": 1,
             "default": 5000,
-            "description": "Typing indicator request timeout in milliseconds."
+            "description": "Default typing indicator request timeout in milliseconds."
           },
           "processingAckText": {
             "type": "string",
             "default": "",
-            "description": "Optional interim WhatsApp message to send when an agent run is still active after processingAckDelayMs. Leave empty to disable."
+            "description": "Default interim WhatsApp message to send when an agent run is still active after processingAckDelayMs."
           },
           "processingAckDelayMs": {
             "type": "integer",
             "minimum": 0,
             "default": 12000,
-            "description": "Delay before sending processingAckText while the agent is still preparing a reply."
+            "description": "Default delay before sending processingAckText while the agent is still preparing a reply."
           },
           "dmHistoryLimit": {
             "type": "integer",
             "minimum": 0,
-            "description": "Maximum direct-message user turns to keep in agent context. 0 or unset keeps the full session."
+            "description": "Default maximum direct-message user turns to keep in agent context. 0 or unset keeps the full session."
           }
         },
-        "required": ["enabled", "fromNumber", "webhookUrl"]
+        "required": ["enabled", "webhookUrl", "accounts"]
       }
     }
   },
@@ -153,12 +197,16 @@
     "enabled": {
       "label": "Enabled"
     },
+    "accounts": {
+      "label": "Accounts",
+      "help": "Map account ids to Twilio WhatsApp sender numbers and per-account DM policy."
+    },
     "dmPolicy": {
-      "label": "DM Policy",
-      "help": "Who can talk to the agent. Use allowlist for personal use."
+      "label": "Account DM Policy",
+      "help": "Who can talk to this sender. Use allowlist for production senders unless the account is intended to be open."
     },
     "allowFrom": {
-      "label": "Allowed Senders",
+      "label": "Account Allowed Senders",
       "help": "Phone numbers in E.164 format (+14155551234)"
     },
     "groupPolicy": {
@@ -174,7 +222,7 @@
       "help": "Accepted for OpenClaw config compatibility only and ignored by this DM-only channel."
     },
     "fromNumber": {
-      "label": "Twilio Sender Number",
+      "label": "Account Twilio Sender Number",
       "placeholder": "+14155550000"
     },
     "webhookUrl": {
