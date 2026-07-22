@@ -337,28 +337,27 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
           dryRunDelivery,
         }, account);
         if (dispatchResult && typeof dispatchResult.then === 'function') {
-          dispatchResult.then(
-            () => {
-              logTiming(config.log, 'dispatch_settled', {
-                messageSid,
-                senderHash,
-                durationMs: Date.now() - dispatchScheduledAt,
-              });
-            },
-            (error) => {
-              logTiming(config.log, 'dispatch_settled_error', {
-                messageSid,
-                senderHash,
-                durationMs: Date.now() - dispatchScheduledAt,
-                error: error instanceof Error ? error.name || 'Error' : 'unknown',
-              });
-              config.log?.error?.(
-                `[twilio-whatsapp] dispatch failed messageSid=${messageSid || 'unknown'} error=${String(
-                  error instanceof Error ? error.message : error,
-                )}`,
-              );
-            },
-          );
+          try {
+            // Keep the gateway HTTP work admission alive until detached channel work settles.
+            await dispatchResult;
+            logTiming(config.log, 'dispatch_settled', {
+              messageSid,
+              senderHash,
+              durationMs: Date.now() - dispatchScheduledAt,
+            });
+          } catch (error) {
+            logTiming(config.log, 'dispatch_settled_error', {
+              messageSid,
+              senderHash,
+              durationMs: Date.now() - dispatchScheduledAt,
+              error: error instanceof Error ? error.name || 'Error' : 'unknown',
+            });
+            config.log?.error?.(
+              `[twilio-whatsapp] dispatch failed messageSid=${messageSid || 'unknown'} error=${String(
+                error instanceof Error ? error.message : error,
+              )}`,
+            );
+          }
         }
         const durationMs = Date.now() - startedAt;
         logTiming(config.log, 'webhook_processed', {

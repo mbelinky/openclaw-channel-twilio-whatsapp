@@ -110,6 +110,40 @@ test('inbound webhook accepts forwarded public URL signatures and dispatches aft
   assert.ok(!infos.some((line) => line.includes('+14155551234')));
 });
 
+test('inbound webhook keeps the request lifecycle open until async dispatch settles', async () => {
+  const params = {
+    MessageSid: 'SMinAsync',
+    From: 'whatsapp:+14155551234',
+    To: 'whatsapp:+14155550000',
+    Body: 'Inventory check',
+    NumMedia: '0',
+  };
+  const url = 'https://twilio.example.test/webhook/twilio-whatsapp';
+  let releaseDispatch;
+  const dispatchPending = new Promise((resolve) => {
+    releaseDispatch = resolve;
+  });
+  const handler = createWebhookHandler(webhookConfig(), () => dispatchPending);
+  const res = response();
+  let handlerSettled = false;
+
+  const handling = handler(
+    request({ url: '/webhook/twilio-whatsapp', params, headers: signedHeaders(url, params) }),
+    res,
+  ).then(() => {
+    handlerSettled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body, '<Response/>');
+  assert.equal(handlerSettled, false);
+
+  releaseDispatch();
+  await handling;
+  assert.equal(handlerSettled, true);
+});
+
 test('inbound webhook accepts configured alternate public paths', async () => {
   const params = {
     MessageSid: 'SMinAlias',
