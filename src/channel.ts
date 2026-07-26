@@ -97,8 +97,28 @@ interface ResolvedTwilioAccount {
   authToken: string;
 }
 
+interface TwilioReplyPayload {
+  text: string;
+  mediaUrls: string[];
+}
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+export function normalizeTwilioReplyPayload(payload: unknown): TwilioReplyPayload | null {
+  if (!isObjectRecord(payload)) return null;
+  const text = typeof payload.text === 'string' ? payload.text : '';
+  const rawMediaUrls = [
+    typeof payload.mediaUrl === 'string' ? payload.mediaUrl : '',
+    ...(Array.isArray(payload.mediaUrls)
+      ? payload.mediaUrls.filter((entry): entry is string => typeof entry === 'string')
+      : []),
+  ];
+  const mediaUrls = rawMediaUrls
+    .map((entry) => entry.trim())
+    .filter((entry, index, entries) => entry && entries.indexOf(entry) === index);
+  return text || mediaUrls.length > 0 ? { text, mediaUrls } : null;
 }
 
 function normalizeAccountId(value: string | null | undefined): string {
@@ -315,14 +335,24 @@ async function sendWithConfig(params: {
   createClient?: any;
   timing?: TwilioSendTimingContext;
 }) {
+  const outboundDir = path.join(resolveStateDir(), 'media', CHANNEL_KEY, 'outbound');
+  const mediaUrls = (params.mediaUrls || []).map((mediaUrl) => {
+    const trimmedMediaUrl = mediaUrl.trim();
+    if (isPublicHttpsUrl(trimmedMediaUrl)) return trimmedMediaUrl;
+    const stagedUrl = stageMedia(trimmedMediaUrl, outboundDir, params.config.webhookUrl);
+    if (!stagedUrl) {
+      throw new Error(`Twilio WhatsApp media not found or not readable: ${mediaUrl}`);
+    }
+    return stagedUrl;
+  });
   const startedAt = Date.now();
-  const deliveryKind = params.mediaUrls?.length ? 'media' : 'text';
+  const deliveryKind = mediaUrls.length > 0 ? 'media' : 'text';
   const timingFields = {
     kind: params.timing?.kind,
     sessionKey: params.timing?.sessionKey,
     messageSid: params.timing?.messageSid,
     toHash: stableIdHash(params.to),
-    mediaCount: params.mediaUrls?.length ?? 0,
+    mediaCount: mediaUrls.length,
   };
   logTiming(params.timing?.log, 'twilio_send_start', timingFields);
   emitTimingEvent({
@@ -338,7 +368,7 @@ async function sendWithConfig(params: {
       fromNumber: params.config.fromNumber,
       toNumber: params.to,
       text: params.text,
-      mediaUrls: params.mediaUrls,
+      mediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined,
       statusCallbackUrl: statusCallbackUrl(params.config, params.accountId),
       timeoutMs: params.config.sendTimeoutMs,
       maxRetries: params.config.sendRetries,
@@ -429,20 +459,6 @@ const twilioWhatsAppOutbound = {
         );
       }
 
-      let stagedUrl: string | null = null;
-      if (mediaUrl) {
-        const trimmedMediaUrl = mediaUrl.trim();
-        if (isPublicHttpsUrl(trimmedMediaUrl)) {
-          stagedUrl = trimmedMediaUrl;
-        } else {
-          const outboundDir = path.join(resolveStateDir(), 'media', CHANNEL_KEY, 'outbound');
-          stagedUrl = stageMedia(trimmedMediaUrl, outboundDir, account.config.webhookUrl);
-        }
-        if (!stagedUrl) {
-          throw new Error(`Twilio WhatsApp media not found or not readable: ${mediaUrl}`);
-        }
-      }
-
       const result = await sendWithConfig({
         config: account.config,
         accountId: account.accountId,
@@ -450,7 +466,7 @@ const twilioWhatsAppOutbound = {
         authToken: account.authToken,
         to,
         text: text || '',
-        mediaUrls: stagedUrl ? [stagedUrl] : undefined,
+        mediaUrls: mediaUrl ? [mediaUrl] : undefined,
         createClient: deps?.createTwilioClient,
         timing: {
           log: undefined,
@@ -578,7 +594,10 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
           const { account, ctx } = active;
           const { accountSid, authToken } = account;
           let currentSessionKey: string | undefined;
-          const sendTwilioReply = async (text: string, kind: TwilioSendTimingContext['kind'] = 'final_reply') => {
+          const sendTwilioReply = async (
+            payload: TwilioReplyPayload,
+            kind: TwilioSendTimingContext['kind'] = 'final_reply',
+          ) => {
             if (msg.dryRunDelivery === true) {
               logTiming(ctx.log, 'twilio_send_dry_run', {
                 kind,
@@ -600,7 +619,8 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
               accountSid,
               authToken,
               to: msg.senderId,
-              text,
+              text: payload.text,
+              mediaUrls: payload.mediaUrls,
               timing: {
                 log: ctx.log,
                 kind,
@@ -612,7 +632,7 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
               messageId: result.messageIds[0] || '',
               receipt: createMessageReceiptFromOutboundResults({
                 results: result.messageIds.map((messageId) => ({ channel: 'twilio-whatsapp', messageId })),
-                kind: 'text',
+                kind: payload.mediaUrls.length > 0 ? 'media' : 'text',
               }),
             };
           };
@@ -631,7 +651,7 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
           const processingAck = scheduleProcessingAck({
             text: account.config.processingAckText,
             delayMs: account.config.processingAckDelayMs,
-            send: (text) => sendTwilioReply(text, 'processing_ack'),
+            send: (text) => sendTwilioReply({ text, mediaUrls: [] }, 'processing_ack'),
             onError: (error) => {
               logWarn(
                 ctx.log,
@@ -672,10 +692,8 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
               provider: 'twilio-whatsapp',
               surface: 'twilio-whatsapp',
               deliver: async (payload) => {
-                if (payload.text) {
-                  return sendTwilioReply(payload.text, 'final_reply');
-                }
-                return {};
+                const reply = normalizeTwilioReplyPayload(payload);
+                return reply ? sendTwilioReply(reply, 'final_reply') : {};
               },
             });
             currentSessionKey = result?.route?.sessionKey;

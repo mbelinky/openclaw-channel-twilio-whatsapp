@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { buildTwilioTypingIndicatorBody } from '../dist/feedback.js';
+import { normalizeTwilioReplyPayload } from '../dist/channel.js';
 import { stageMedia } from '../dist/media.js';
 import { scheduleProcessingAck } from '../dist/processing-ack.js';
 import { normalizeWhatsAppText, splitWhatsAppText } from '../dist/text.js';
@@ -61,6 +62,32 @@ test('send helper chunks text, attaches status callback, and sends media separat
   assert.deepEqual(calls[3].mediaUrl, ['https://example.test/file.xlsx']);
   assert.equal(calls[3].body, '');
   assert.ok(calls.every((call) => call.body.length <= 10));
+});
+
+test('normal inbound replies preserve their PDF attachment for the shared sender', () => {
+  assert.deepEqual(
+    normalizeTwilioReplyPayload({
+      text: 'PDF del albarán A261377.',
+      mediaUrl: '/tmp/albaran-A261377.pdf',
+      mediaUrls: ['/tmp/albaran-A261377.pdf'],
+    }),
+    {
+      text: 'PDF del albarán A261377.',
+      mediaUrls: ['/tmp/albaran-A261377.pdf'],
+    },
+  );
+});
+
+test('normal inbound replies keep media-only payloads instead of dropping them', () => {
+  assert.deepEqual(
+    normalizeTwilioReplyPayload({
+      mediaUrls: ['/tmp/albaran-A261377.pdf'],
+    }),
+    {
+      text: '',
+      mediaUrls: ['/tmp/albaran-A261377.pdf'],
+    },
+  );
 });
 
 test('send helper falls back to the default chunk limit for invalid limits', async () => {
