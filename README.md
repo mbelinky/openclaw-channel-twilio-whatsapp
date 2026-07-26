@@ -57,7 +57,7 @@ The agent install will write these for you — this section is for reference onl
 | `accounts` | yes | Map of OpenClaw account ids to WhatsApp senders |
 | `accounts.<id>.fromNumber` | yes | Twilio WhatsApp sender in E.164 |
 | `accounts.<id>.dmPolicy` | yes | `"allowlist"` (only `allowFrom` numbers) or `"open"` (anyone) |
-| `accounts.<id>.allowFrom` | when `allowlist` | Phone numbers in E.164 format (e.g. `+14155551234`) |
+| `accounts.<id>.allowFrom` | yes | Phone numbers in E.164 format for `allowlist`; use `["*"]` with `open` |
 | `accounts.<id>.groupPolicy` | no | Accepted for shared OpenClaw config compatibility only; ignored at runtime |
 | `accounts.<id>.groupAllowFrom` | no | Accepted for shared OpenClaw config compatibility only; ignored at runtime |
 | `accounts.<id>.groups` | no | Accepted for shared OpenClaw config compatibility only; ignored at runtime |
@@ -103,7 +103,8 @@ Version 3 is a clean cutover. Legacy top-level `fromNumber`, `dmPolicy`, and `al
         },
         "mkps": {
           "fromNumber": "+447427807929",
-          "dmPolicy": "open"
+          "dmPolicy": "open",
+          "allowFrom": ["*"]
         }
       }
     }

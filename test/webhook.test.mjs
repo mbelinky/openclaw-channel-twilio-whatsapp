@@ -192,7 +192,7 @@ test('inbound webhook routes by Twilio To number across configured accounts', as
           accountId: 'mkps',
           fromNumber: 'whatsapp:+447427807929',
           dmPolicy: 'open',
-          allowFrom: new Set(),
+          allowFrom: new Set(['*']),
         }),
       ],
     }),
@@ -307,7 +307,7 @@ test('inbound webhook keeps allowlist policy closed when allowFrom is empty', as
   assert.equal(res.body, 'Forbidden');
 });
 
-test('inbound webhook allows empty allowFrom only when dmPolicy is open', async () => {
+test('inbound webhook requires wildcard allowFrom when dmPolicy is open', async () => {
   const params = {
     MessageSid: 'SMinOpen',
     From: 'whatsapp:+14155559888',
@@ -316,11 +316,27 @@ test('inbound webhook allows empty allowFrom only when dmPolicy is open', async 
     NumMedia: '0',
   };
   const url = 'https://twilio.example.test/webhook/twilio-whatsapp';
-  const dispatched = [];
-  const handler = createWebhookHandler(
+  const closedHandler = createWebhookHandler(
     webhookConfig({}, {
       dmPolicy: 'open',
       allowFrom: new Set(),
+    }),
+    () => {
+      throw new Error('should not dispatch');
+    },
+  );
+  const closedResponse = response();
+  await closedHandler(
+    request({ url: '/webhook/twilio-whatsapp', params, headers: signedHeaders(url, params) }),
+    closedResponse,
+  );
+  assert.equal(closedResponse.statusCode, 403);
+
+  const dispatched = [];
+  const openHandler = createWebhookHandler(
+    webhookConfig({}, {
+      dmPolicy: 'open',
+      allowFrom: new Set(['*']),
     }),
     (message) => {
       dispatched.push(message);
@@ -328,7 +344,10 @@ test('inbound webhook allows empty allowFrom only when dmPolicy is open', async 
   );
   const res = response();
 
-  await handler(request({ url: '/webhook/twilio-whatsapp', params, headers: signedHeaders(url, params) }), res);
+  await openHandler(
+    request({ url: '/webhook/twilio-whatsapp', params, headers: signedHeaders(url, params) }),
+    res,
+  );
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(res.statusCode, 200);

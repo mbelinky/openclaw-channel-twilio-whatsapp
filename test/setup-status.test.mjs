@@ -41,7 +41,28 @@ test('setup status requires allowFrom when dmPolicy is allowlist', () => {
   assert.match(status.hint, /allowFrom/);
 });
 
-test('setup status allows empty allowFrom only when dmPolicy is open', () => {
+test('setup status requires a wildcard allowFrom when dmPolicy is open', () => {
+  const missingWildcard = withTwilioEnv(() =>
+    twilioWhatsAppPlugin.setup.resolveChannelSetupStatus({
+      cfg: {
+        channels: {
+          'twilio-whatsapp': {
+            enabled: true,
+            webhookUrl: 'https://twilio.example.test',
+            accounts: {
+              mkps: {
+                dmPolicy: 'open',
+                fromNumber: '+447427807929',
+              },
+            },
+          },
+        },
+      },
+    }),
+  );
+  assert.equal(missingWildcard.status, 'not-configured');
+  assert.match(missingWildcard.hint, /allowFrom.*\["\*"\]/);
+
   const status = withTwilioEnv(() =>
     twilioWhatsAppPlugin.setup.resolveChannelSetupStatus({
       cfg: {
@@ -52,6 +73,7 @@ test('setup status allows empty allowFrom only when dmPolicy is open', () => {
             accounts: {
               mkps: {
                 dmPolicy: 'open',
+                allowFrom: ['*'],
                 fromNumber: '+447427807929',
               },
             },
@@ -99,6 +121,7 @@ test('outbound adapter selects the fromNumber for the requested accountId', asyn
           },
           mkps: {
             dmPolicy: 'open',
+            allowFrom: ['*'],
             fromNumber: '+447427807929',
           },
         },

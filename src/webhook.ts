@@ -109,7 +109,7 @@ function validateTwilioSignature(
 }
 
 function isSenderAllowed(config: Pick<WebhookAccountConfig, 'dmPolicy' | 'allowFrom'>, senderPhone: string): boolean {
-  if (config.dmPolicy === 'open') return true;
+  if (config.dmPolicy === 'open') return config.allowFrom.has('*');
   return config.allowFrom.has(senderPhone);
 }
 

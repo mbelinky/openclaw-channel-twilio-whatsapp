@@ -29,7 +29,7 @@ Ask for all of these before touching any files. Don't make up values.
 | Twilio Auth Token | secret string | `TWILIO_AUTH_TOKEN` env var |
 | OpenClaw account id per sender | stable id, e.g. `vinalia`, `mkps` | `accounts.<id>` and `bindings[].match.accountId` |
 | Twilio WhatsApp sender number per account | E.164, e.g. `+14155550000` (Sandbox: `+14155238886`) | `accounts.<id>.fromNumber` |
-| Allowed sender phone numbers per allowlisted account | E.164 list, e.g. `["+14155551234"]` | `accounts.<id>.allowFrom` |
+| Allowed senders | E.164 list for `allowlist`; `["*"]` for `open` | `accounts.<id>.allowFrom` |
 | DM policy per account | `"allowlist"` or `"open"` | `accounts.<id>.dmPolicy` |
 | Public webhook base URL | `https://host.example.com` (no trailing slash, no path) | `webhookUrl` |
 
@@ -99,6 +99,7 @@ Merge this into the user's existing `openclaw.json` (don't overwrite the whole f
         },
         "mkps": {
           "dmPolicy": "open",
+          "allowFrom": ["*"],
           "fromNumber": "+447427807929"
         }
       }
@@ -125,7 +126,7 @@ Modern OpenClaw gateways (2026.x) key plugin config by the manifest id (from `op
 Also:
 
 - If `plugins.allow` already exists, **append** to it; don't replace.
-- `accounts.<id>.dmPolicy: "open"` is allowed but strongly discouraged — anyone with that sender's number can talk to the bound agent and rack up Twilio charges. Default to `"allowlist"` unless the sender is intentionally public.
+- `accounts.<id>.dmPolicy: "open"` requires `accounts.<id>.allowFrom: ["*"]` and is strongly discouraged — anyone with that sender's number can talk to the bound agent and rack up Twilio charges. Default to `"allowlist"` unless the sender is intentionally public.
 - Do not write legacy top-level `fromNumber`, `dmPolicy`, or `allowFrom`; v3 rejects them. Use `accounts.<id>.*`.
 
 ## Step 3 — set the secrets

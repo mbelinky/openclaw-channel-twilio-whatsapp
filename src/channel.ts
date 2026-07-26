@@ -242,7 +242,8 @@ const twilioWhatsAppSecurity = createRestrictSendersChannelSecurity<ResolvedTwil
   policyPathSuffix: 'dmPolicy',
   mentionGated: false,
   approveHint: 'Add the phone number to channels.twilio-whatsapp.accounts.<accountId>.allowFrom',
-  normalizeDmEntry: (raw) => raw.replace(/^whatsapp:/i, '').replace(/^\+?/, '+'),
+  normalizeDmEntry: (raw) =>
+    raw === '*' ? raw : raw.replace(/^whatsapp:/i, '').replace(/^\+?/, '+'),
 });
 
 function addAccountIdQuery(url: string, accountId: string): string {
@@ -288,7 +289,11 @@ type StartedTwilioAccount = {
 const startedTwilioAccounts = new Map<string, StartedTwilioAccount>();
 
 function normalizedAllowFrom(values: string[] | undefined): Set<string> {
-  return new Set((values || []).map((p: string) => fromWhatsAppId(p).replace(/^\+?/, '+')));
+  return new Set(
+    (values || []).map((value: string) =>
+      value === '*' ? value : fromWhatsAppId(value).replace(/^\+?/, '+'),
+    ),
+  );
 }
 
 function resolveWebhookAccounts(params: {
@@ -538,10 +543,18 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
           if (!accountCfg?.fromNumber) {
             return { status: 'not-configured', hint: `Set channels.twilio-whatsapp.accounts.${accountId}.fromNumber` };
           }
-          if (resolveDmPolicy(accountCfg) === 'allowlist' && !(accountCfg.allowFrom || []).length) {
+          const dmPolicy = resolveDmPolicy(accountCfg);
+          const allowFrom = accountCfg.allowFrom || [];
+          if (
+            (dmPolicy === 'allowlist' && allowFrom.length === 0) ||
+            (dmPolicy === 'open' && !allowFrom.includes('*'))
+          ) {
             return {
               status: 'not-configured',
-              hint: `Set channels.twilio-whatsapp.accounts.${accountId}.allowFrom or change dmPolicy to open`,
+              hint:
+                dmPolicy === 'open'
+                  ? `Set channels.twilio-whatsapp.accounts.${accountId}.allowFrom to ["*"]`
+                  : `Set channels.twilio-whatsapp.accounts.${accountId}.allowFrom`,
             };
           }
         }

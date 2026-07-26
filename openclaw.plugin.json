@@ -56,15 +56,15 @@
                   "type": "string",
                   "enum": ["allowlist", "open"],
                   "default": "allowlist",
-                  "description": "Restrict who can DM this account. 'allowlist' requires phone numbers in allowFrom; 'open' lets anyone with the sender number talk."
+                  "description": "Restrict who can DM this account. 'allowlist' requires phone numbers in allowFrom; 'open' requires allowFrom [\"*\"] and lets anyone with the sender number talk."
                 },
                 "allowFrom": {
                   "type": "array",
                   "items": {
                     "type": "string",
-                    "pattern": "^\\+[1-9]\\d{1,14}$"
+                    "pattern": "^(\\*|\\+[1-9]\\d{1,14})$"
                   },
-                  "description": "Phone numbers in E.164 format allowed to DM this account when dmPolicy is 'allowlist'."
+                  "description": "Phone numbers in E.164 format allowed to DM this account when dmPolicy is 'allowlist'. Use [\"*\"] with dmPolicy 'open'."
                 },
                 "groupPolicy": {
                   "type": "string",
@@ -207,7 +207,7 @@
     },
     "allowFrom": {
       "label": "Account Allowed Senders",
-      "help": "Phone numbers in E.164 format (+14155551234)"
+      "help": "Phone numbers in E.164 format (+14155551234), or * when dmPolicy is open"
     },
     "groupPolicy": {
       "label": "Group Policy",

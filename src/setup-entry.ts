@@ -19,7 +19,16 @@ export default defineSetupPluginEntry({
       const firstAllowlistMissing = accounts.find(
         ([, account]) => (account?.dmPolicy ?? 'allowlist') === 'allowlist' && !(account?.allowFrom || []).length,
       );
-      const configured = !!(c?.webhookUrl && accounts.length > 0 && !firstIncomplete && !firstAllowlistMissing) && hasCreds;
+      const firstOpenWildcardMissing = accounts.find(
+        ([, account]) => account?.dmPolicy === 'open' && !(account?.allowFrom || []).includes('*'),
+      );
+      const configured = !!(
+        c?.webhookUrl &&
+        accounts.length > 0 &&
+        !firstIncomplete &&
+        !firstAllowlistMissing &&
+        !firstOpenWildcardMissing
+      ) && hasCreds;
       const hint = !hasCreds
         ? 'Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN'
         : !c?.webhookUrl
@@ -30,6 +39,8 @@ export default defineSetupPluginEntry({
         ? `Set channels.twilio-whatsapp.accounts.${firstIncomplete[0]}.fromNumber`
         : firstAllowlistMissing
         ? `Set channels.twilio-whatsapp.accounts.${firstAllowlistMissing[0]}.allowFrom or change dmPolicy to open`
+        : firstOpenWildcardMissing
+        ? `Set channels.twilio-whatsapp.accounts.${firstOpenWildcardMissing[0]}.allowFrom to ["*"]`
         : undefined;
       return { enabled, configured, hint };
     },
