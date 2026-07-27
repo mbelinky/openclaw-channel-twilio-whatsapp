@@ -235,7 +235,7 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
         durationMs: Date.now() - startedAt,
       });
 
-      const profileName = params.ProfileName || senderPhone;
+      const profileName = params.ProfileName?.trim() || '';
       const dryRunDelivery = firstHeader(req.headers['x-openclaw-dry-run-delivery']) === '1';
 
       if (account.typingIndicators === true && messageSid && account.sendTypingIndicator) {

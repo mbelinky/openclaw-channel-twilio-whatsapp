@@ -103,11 +103,34 @@ test('inbound webhook accepts forwarded public URL signatures and dispatches aft
   assert.equal(typing[0], 'SMin');
   assert.equal(dispatched[0].accountId, 'vinalia');
   assert.equal(dispatched[0].senderId, '+14155551234');
+  assert.equal(dispatched[0].senderName, 'Operator');
   assert.equal(dispatched[0].text, 'Inventory check');
   assert.ok(infos.some((line) => line.includes('event=webhook_received')));
   assert.ok(infos.some((line) => line.includes('event=webhook_processed')));
   assert.ok(infos.some((line) => line.includes('event=typing_done')));
   assert.ok(!infos.some((line) => line.includes('+14155551234')));
+});
+
+test('inbound webhook does not mislabel a phone number as a profile name', async () => {
+  const params = {
+    MessageSid: 'SMinNoProfile',
+    From: 'whatsapp:+14155551234',
+    To: 'whatsapp:+14155550000',
+    Body: 'No profile',
+    NumMedia: '0',
+  };
+  const url = 'https://twilio.example.test/webhook/twilio-whatsapp';
+  const dispatched = [];
+  const handler = createWebhookHandler(webhookConfig(), (message) => {
+    dispatched.push(message);
+  });
+  const res = response();
+
+  await handler(request({ url, params, headers: signedHeaders(url, params) }), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(dispatched[0].senderName, '');
+  assert.equal(dispatched[0].senderId, '+14155551234');
 });
 
 test('inbound webhook keeps the request lifecycle open until async dispatch settles', async () => {

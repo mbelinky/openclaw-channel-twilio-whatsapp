@@ -102,6 +102,15 @@ interface TwilioReplyPayload {
   mediaUrls: string[];
 }
 
+export function buildTwilioInboundExtraContext(
+  message: Pick<InboundMessage, 'senderId' | 'senderName'>,
+): Record<string, string> {
+  return {
+    ...(message.senderName.trim() ? { SenderName: message.senderName.trim() } : {}),
+    SenderE164: message.senderId,
+  };
+}
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -704,6 +713,7 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
               messageId: msg.messageSid,
               provider: 'twilio-whatsapp',
               surface: 'twilio-whatsapp',
+              extraContext: buildTwilioInboundExtraContext(msg),
               deliver: async (payload) => {
                 const reply = normalizeTwilioReplyPayload(payload);
                 return reply ? sendTwilioReply(reply, 'final_reply') : {};

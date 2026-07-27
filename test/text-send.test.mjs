@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { buildTwilioTypingIndicatorBody } from '../dist/feedback.js';
-import { normalizeTwilioReplyPayload } from '../dist/channel.js';
+import {
+  buildTwilioInboundExtraContext,
+  normalizeTwilioReplyPayload,
+} from '../dist/channel.js';
 import { stageMedia } from '../dist/media.js';
 import { scheduleProcessingAck } from '../dist/processing-ack.js';
 import { normalizeWhatsAppText, splitWhatsAppText } from '../dist/text.js';
@@ -14,6 +17,28 @@ test('normalizes markdown and unicode punctuation for WhatsApp', () => {
   assert.equal(
     normalizeWhatsAppText(' **Hola**\n\n\n- Uno — `dos`…\n```sh\nnpm test\n```\n~~fin~~ '),
     '*Hola*\nUno -- dos...\nnpm test\n\n~fin~',
+  );
+});
+
+test('forwards WhatsApp profile identity into the OpenClaw inbound contract', () => {
+  assert.deepEqual(
+    buildTwilioInboundExtraContext({
+      senderId: '+14155551234',
+      senderName: ' Operator ',
+    }),
+    {
+      SenderName: 'Operator',
+      SenderE164: '+14155551234',
+    },
+  );
+  assert.deepEqual(
+    buildTwilioInboundExtraContext({
+      senderId: '+14155551234',
+      senderName: '',
+    }),
+    {
+      SenderE164: '+14155551234',
+    },
   );
 });
 
