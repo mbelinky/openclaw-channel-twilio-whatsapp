@@ -25,6 +25,8 @@ import { sendTwilioWhatsAppMessages } from './send.js';
 import { sendTwilioTypingIndicator } from './feedback.js';
 import { scheduleProcessingAck } from './processing-ack.js';
 import { emitTimingEvent, logTiming, type TimingLogger } from './diagnostics.js';
+import { emitTwilioWhatsAppMessageSentHook } from './sent-hook.js';
+import { normalizeWhatsAppText } from './text.js';
 
 const TWILIO_MAX_MESSAGE_LEN = 1600;
 const CHANNEL_KEY = 'twilio-whatsapp';
@@ -615,7 +617,14 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
           }
           const { account, ctx } = active;
           const { accountSid, authToken } = account;
-          let currentSessionKey: string | undefined;
+          const runtime = getTwilioWhatsAppRuntime();
+          const route = runtime.channel.routing.resolveAgentRoute({
+            cfg: ctx.cfg,
+            channel: CHANNEL_KEY,
+            accountId: account.accountId,
+            peer: { kind: 'direct', id: msg.senderId },
+          });
+          const currentSessionKey = route.sessionKey;
           const sendTwilioReply = async (
             payload: TwilioReplyPayload,
             kind: TwilioSendTimingContext['kind'] = 'final_reply',
@@ -635,28 +644,57 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
                 }),
               };
             }
-            const result = await sendWithConfig({
-              config: account.config,
-              accountId: account.accountId,
-              accountSid,
-              authToken,
-              to: msg.senderId,
-              text: payload.text,
-              mediaUrls: payload.mediaUrls,
-              timing: {
-                log: ctx.log,
-                kind,
-                sessionKey: currentSessionKey,
-                messageSid: msg.messageSid,
-              },
-            });
-            return {
-              messageId: result.messageIds[0] || '',
-              receipt: createMessageReceiptFromOutboundResults({
-                results: result.messageIds.map((messageId) => ({ channel: 'twilio-whatsapp', messageId })),
-                kind: payload.mediaUrls.length > 0 ? 'media' : 'text',
-              }),
-            };
+            const content = normalizeWhatsAppText(payload.text);
+            try {
+              const result = await sendWithConfig({
+                config: account.config,
+                accountId: account.accountId,
+                accountSid,
+                authToken,
+                to: msg.senderId,
+                text: content,
+                mediaUrls: payload.mediaUrls,
+                timing: {
+                  log: ctx.log,
+                  kind,
+                  sessionKey: currentSessionKey,
+                  messageSid: msg.messageSid,
+                },
+              });
+              const messageId = result.messageIds[0] || '';
+              if (kind === 'final_reply') {
+                emitTwilioWhatsAppMessageSentHook({
+                  to: msg.senderId,
+                  content,
+                  success: true,
+                  accountId: account.accountId,
+                  messageId,
+                  sessionKey: currentSessionKey,
+                });
+              }
+              return {
+                messageId,
+                receipt: createMessageReceiptFromOutboundResults({
+                  results: result.messageIds.map((sentMessageId) => ({
+                    channel: 'twilio-whatsapp',
+                    messageId: sentMessageId,
+                  })),
+                  kind: payload.mediaUrls.length > 0 ? 'media' : 'text',
+                }),
+              };
+            } catch (error) {
+              if (kind === 'final_reply') {
+                emitTwilioWhatsAppMessageSentHook({
+                  to: msg.senderId,
+                  content,
+                  success: false,
+                  error: String(error),
+                  accountId: account.accountId,
+                  sessionKey: currentSessionKey,
+                });
+              }
+              throw error;
+            }
           };
 
           // The webhook layer (webhook.ts) and createRestrictSendersChannelSecurity
@@ -701,7 +739,7 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
               channel: 'twilio-whatsapp',
               accountId: account.accountId,
               peer: { kind: 'direct', id: msg.senderId },
-              runtime: getTwilioWhatsAppRuntime(),
+              runtime,
               channelLabel: 'Twilio WhatsApp',
               conversationLabel: msg.senderName || stableIdHash(msg.senderId),
               rawBody: msg.text,
@@ -719,7 +757,6 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
                 return reply ? sendTwilioReply(reply, 'final_reply') : {};
               },
             });
-            currentSessionKey = result?.route?.sessionKey;
 
             ctx.log?.debug?.(
               `[twilio-whatsapp] dispatched messageSid=${msg.messageSid} ` +
