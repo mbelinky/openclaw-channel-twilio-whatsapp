@@ -8,6 +8,14 @@ import {
 import { resolveTwilioWhatsAppAccount, twilioWhatsAppPlugin } from '../dist/channel.js';
 import setupEntry from '../dist/setup-entry.js';
 
+test('publishes the runtime secret contract sidecar expected by OpenClaw', async () => {
+  const contract = await import('../dist/secret-contract-api.js');
+
+  assert.equal(typeof contract.collectRuntimeConfigAssignments, 'function');
+  assert.ok(Array.isArray(contract.secretTargetRegistryEntries));
+  assert.equal(contract.secretTargetRegistryEntries.length, 2);
+});
+
 function withTwilioEnv(fn) {
   const oldSid = process.env.TWILIO_ACCOUNT_SID;
   const oldToken = process.env.TWILIO_AUTH_TOKEN;
