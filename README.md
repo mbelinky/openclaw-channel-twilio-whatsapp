@@ -112,7 +112,7 @@ Version 3 is a clean cutover. Legacy top-level `fromNumber`, `dmPolicy`, and `al
         "mkps": {
           "accountSid": { "source": "env", "provider": "default", "id": "TWILIO_MKPS_ACCOUNT_SID" },
           "authToken": { "source": "env", "provider": "default", "id": "TWILIO_MKPS_AUTH_TOKEN" },
-          "fromNumber": "+447427807929",
+          "fromNumber": "+447700900456",
           "dmPolicy": "open",
           "allowFrom": ["*"]
         }

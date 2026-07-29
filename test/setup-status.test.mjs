@@ -79,7 +79,7 @@ test('setup status requires a wildcard allowFrom when dmPolicy is open', () => {
             accounts: {
               mkps: {
                 dmPolicy: 'open',
-                fromNumber: '+447427807929',
+                fromNumber: '+447700900456',
               },
             },
           },
@@ -101,7 +101,7 @@ test('setup status requires a wildcard allowFrom when dmPolicy is open', () => {
               mkps: {
                 dmPolicy: 'open',
                 allowFrom: ['*'],
-                fromNumber: '+447427807929',
+                fromNumber: '+447700900456',
               },
             },
           },
@@ -154,7 +154,7 @@ test('outbound text selects the requested account credentials and sender', async
             authToken: 'token-mkps',
             dmPolicy: 'open',
             allowFrom: ['*'],
-            fromNumber: '+447427807929',
+            fromNumber: '+447700900456',
           },
         },
       },
@@ -182,7 +182,7 @@ test('outbound text selects the requested account credentials and sender', async
   );
 
   assert.deepEqual(clients, [{ accountSid: 'AC-mkps', authToken: 'token-mkps' }]);
-  assert.equal(calls[0].from, 'whatsapp:+447427807929');
+  assert.equal(calls[0].from, 'whatsapp:+447700900456');
   assert.equal(calls[0].to, 'whatsapp:+447700900123');
 });
 

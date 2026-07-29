@@ -104,7 +104,7 @@ Merge this into the user's existing `openclaw.json` (don't overwrite the whole f
           "authToken": { "source": "env", "provider": "default", "id": "TWILIO_MKPS_AUTH_TOKEN" },
           "dmPolicy": "open",
           "allowFrom": ["*"],
-          "fromNumber": "+447427807929"
+          "fromNumber": "+447700900456"
         }
       }
     }

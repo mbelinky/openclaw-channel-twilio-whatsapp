@@ -143,7 +143,7 @@ test('channel schema accepts multi-account prod-shaped config with group and del
       mkps: {
         dmPolicy: 'open',
         allowFrom: ['*'],
-        fromNumber: '+447427807929',
+        fromNumber: '+447700900456',
         mediaMaxMb: 10,
       },
     },
