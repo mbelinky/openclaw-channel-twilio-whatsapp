@@ -10,17 +10,7 @@ declare module 'openclaw/plugin-sdk/channel-core' {
     registerFull?: any;
   }): any;
 
-  export function defineSetupPluginEntry(params: {
-    id: string;
-    channel: {
-      id: string;
-      inspectAccount: (params: { cfg: any; accountId?: string }) => {
-        enabled: boolean;
-        configured: boolean;
-        hint?: string;
-      };
-    };
-  }): any;
+  export function defineSetupPluginEntry(params: any): any;
 
   export function createChatChannelPlugin<TAccount = any>(params: {
     base: {
@@ -67,6 +57,47 @@ declare module 'openclaw/plugin-sdk/channel-core' {
   }): any;
 }
 
+declare module 'openclaw/plugin-sdk/channel-secret-basic-runtime' {
+  export type SecretDefaults = any;
+  export type ResolverContext = any;
+  export type SecretTargetRegistryEntry = {
+    id: string;
+    targetType: string;
+    configFile: 'openclaw.json' | 'auth-profiles.json';
+    pathPattern: string;
+    secretShape: 'secret_input' | 'sibling_ref';
+    expectedResolvedValue: 'string' | 'string-or-object';
+    includeInPlan: boolean;
+    includeInConfigure: boolean;
+    includeInAudit: boolean;
+  };
+  export function getChannelSurface(
+    config: { channels?: Record<string, unknown> },
+    channelKey: string,
+  ): {
+    surface: {
+      channelEnabled: boolean;
+      hasExplicitAccounts: boolean;
+      accounts: Array<{
+        accountId: string;
+        account: Record<string, any>;
+        enabled: boolean;
+      }>;
+    };
+  } | null;
+  export function hasOwnProperty(value: object, key: PropertyKey): boolean;
+  export function collectSecretInputAssignment(params: {
+    value: unknown;
+    path: string;
+    expected: 'string' | 'string-or-object';
+    defaults?: SecretDefaults;
+    context: ResolverContext;
+    active: boolean;
+    inactiveReason: string;
+    apply: (value: string) => void;
+  }): void;
+}
+
 declare module 'openclaw/plugin-sdk/channel-policy' {
   export function createRestrictSendersChannelSecurity<TAccount = any>(params: {
     channelKey: string;
@@ -82,6 +113,27 @@ declare module 'openclaw/plugin-sdk/channel-policy' {
     approveHint: string;
     normalizeDmEntry: (raw: string) => string;
   }): any;
+}
+
+declare module 'openclaw/plugin-sdk/channel-message' {
+  export function createChannelMessageAdapterFromOutbound(params: any): any;
+  export function createMessageReceiptFromOutboundResults(params: any): any;
+}
+
+declare module 'openclaw/plugin-sdk/diagnostic-runtime' {
+  export type DiagnosticEventPayload = Record<string, any>;
+  export function emitDiagnosticEvent(event: any): void;
+}
+
+declare module 'openclaw/plugin-sdk/hook-runtime' {
+  export function buildCanonicalSentMessageHookContext(params: any): any;
+  export function fireAndForgetHook(work: Promise<any>, label: string): void;
+  export function toPluginMessageContext(context: any): any;
+  export function toPluginMessageSentEvent(context: any): any;
+}
+
+declare module 'openclaw/plugin-sdk/plugin-runtime' {
+  export function getGlobalHookRunner(): any;
 }
 
 declare module 'openclaw/plugin-sdk/channel-send-result' {

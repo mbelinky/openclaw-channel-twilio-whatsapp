@@ -6,7 +6,9 @@ import test from 'node:test';
 import { buildTwilioTypingIndicatorBody } from '../dist/feedback.js';
 import {
   buildTwilioInboundExtraContext,
+  createWebhookAccountConfig,
   normalizeTwilioReplyPayload,
+  sendWithConfig,
 } from '../dist/channel.js';
 import { stageMedia } from '../dist/media.js';
 import { scheduleProcessingAck } from '../dist/processing-ack.js';
@@ -306,4 +308,82 @@ test('processing ack sends only when the run remains active past the delay', asy
   await new Promise((resolve) => setTimeout(resolve, 25));
 
   assert.deepEqual(cancelled, []);
+});
+
+test('final reply and processing acknowledgement keep their account credentials', async () => {
+  const clients = [];
+  const createClient = (accountSid, authToken) => ({
+    messages: {
+      create: async () => {
+        clients.push({ accountSid, authToken });
+        return { sid: `SM${clients.length}` };
+      },
+    },
+  });
+  const baseConfig = {
+    webhookUrl: 'https://twilio.example.test',
+    fromNumber: '+14155550001',
+  };
+
+  await sendWithConfig({
+    config: baseConfig,
+    accountId: 'account-a',
+    accountSid: 'AC-a',
+    authToken: 'token-a',
+    to: '+14155551234',
+    text: 'final',
+    createClient,
+    timing: { kind: 'final_reply' },
+  });
+  await sendWithConfig({
+    config: { ...baseConfig, fromNumber: '+14155550002' },
+    accountId: 'account-b',
+    accountSid: 'AC-b',
+    authToken: 'token-b',
+    to: '+14155551234',
+    text: 'working',
+    createClient,
+    timing: { kind: 'processing_ack' },
+  });
+
+  assert.deepEqual(clients, [
+    { accountSid: 'AC-a', authToken: 'token-a' },
+    { accountSid: 'AC-b', authToken: 'token-b' },
+  ]);
+});
+
+test('typing indicator uses the resolved account credentials', async (t) => {
+  const inboundDir = fs.mkdtempSync(path.join(os.tmpdir(), 'twilio-typing-account-'));
+  t.after(() => fs.rmSync(inboundDir, { recursive: true, force: true }));
+  const calls = [];
+  const webhookAccount = createWebhookAccountConfig(
+    {
+      accountId: 'account-b',
+      name: 'Account B',
+      enabled: true,
+      accountSid: 'AC-b',
+      authToken: 'token-b',
+      credentialSource: 'account',
+      config: {
+        webhookUrl: 'https://twilio.example.test',
+        fromNumber: '+14155550002',
+        dmPolicy: 'open',
+        allowFrom: ['*'],
+        typingIndicators: true,
+      },
+    },
+    inboundDir,
+    {
+      sendTypingIndicator: async (params) => {
+        calls.push(params);
+        return true;
+      },
+    },
+  );
+
+  await webhookAccount.sendTypingIndicator('SMinbound');
+
+  assert.equal(calls[0].accountSid, 'AC-b');
+  assert.equal(calls[0].authToken, 'token-b');
+  assert.equal(calls[0].messageSid, 'SMinbound');
 });

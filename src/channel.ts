@@ -27,10 +27,19 @@ import { scheduleProcessingAck } from './processing-ack.js';
 import { emitTimingEvent, logTiming, type TimingLogger } from './diagnostics.js';
 import { emitTwilioWhatsAppMessageSentHook } from './sent-hook.js';
 import { normalizeWhatsAppText } from './text.js';
+import {
+  credentialConfigurationHint,
+  resolveTwilioCredentials,
+  type TwilioCredentialInput,
+} from './credentials.js';
+import { collectRuntimeConfigAssignments, secretTargetRegistryEntries } from './secret-contract.js';
+import {
+  createSharedTwilioRouteLifecycle,
+  INBOUND_WEBHOOK_PATHS,
+} from './shared-routes.js';
 
 const TWILIO_MAX_MESSAGE_LEN = 1600;
 const CHANNEL_KEY = 'twilio-whatsapp';
-const INBOUND_WEBHOOK_PATHS = ['/webhook/twilio-whatsapp', '/webhook/twilio'];
 const LEGACY_TOP_LEVEL_ACCOUNT_KEYS = [
   'fromNumber',
   'dmPolicy',
@@ -51,6 +60,8 @@ function isPublicHttpsUrl(value: string): boolean {
 interface TwilioWhatsAppAccountConfig {
   name?: string;
   enabled?: boolean;
+  accountSid?: TwilioCredentialInput;
+  authToken?: TwilioCredentialInput;
   dmPolicy?: 'allowlist' | 'open';
   allowFrom?: string[];
   groupPolicy?: 'disabled' | 'allowlist' | 'open';
@@ -97,6 +108,7 @@ interface ResolvedTwilioAccount {
   config: ResolvedTwilioAccountConfig;
   accountSid: string;
   authToken: string;
+  credentialSource: 'account' | 'global';
 }
 
 interface TwilioReplyPayload {
@@ -227,20 +239,20 @@ export function resolveTwilioWhatsAppAccount(cfg: any, accountId?: string | null
   const channelCfg = readChannelConfig(cfg);
   if (!channelCfg?.enabled) return null;
 
-  const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
-  const authToken = process.env.TWILIO_AUTH_TOKEN || '';
-  if (!accountSid || !authToken) return null;
   const resolvedAccountId = normalizeAccountId(accountId || resolveDefaultTwilioAccountId(cfg));
   const accountCfg = resolveMergedAccountConfig(channelCfg, resolvedAccountId);
   if (!accountCfg || accountCfg.enabled === false) return null;
+  const credentials = resolveTwilioCredentials(resolvedAccountId, accountCfg);
+  if (!credentials) return null;
 
   return {
     accountId: resolvedAccountId,
     name: accountCfg.name || `Twilio WhatsApp (${resolvedAccountId})`,
     enabled: channelCfg.enabled,
     config: accountCfg,
-    accountSid,
-    authToken,
+    accountSid: credentials.accountSid,
+    authToken: credentials.authToken,
+    credentialSource: credentials.source,
   };
 }
 
@@ -295,9 +307,13 @@ type TwilioSendTimingContext = {
 type StartedTwilioAccount = {
   account: ResolvedTwilioAccount;
   ctx: any;
+  webhookAccount: import('./webhook.js').WebhookAccountConfig;
 };
 
 const startedTwilioAccounts = new Map<string, StartedTwilioAccount>();
+const sharedRouteLifecycle = createSharedTwilioRouteLifecycle((registration) =>
+  registerPluginHttpRoute(registration),
+);
 
 function normalizedAllowFrom(values: string[] | undefined): Set<string> {
   return new Set(
@@ -307,40 +323,50 @@ function normalizedAllowFrom(values: string[] | undefined): Set<string> {
   );
 }
 
-function resolveWebhookAccounts(params: {
-  cfg: any;
-  inboundBaseDir: string;
-  accountSid: string;
-  authToken: string;
-}) {
-  return listTwilioAccountIds(params.cfg)
-    .map((accountId) => resolveTwilioWhatsAppAccount(params.cfg, accountId))
-    .filter((account): account is ResolvedTwilioAccount => Boolean(account))
-    .map((account) => {
-      const inboundDir = path.join(params.inboundBaseDir, account.accountId);
-      fs.mkdirSync(inboundDir, { recursive: true });
-      return {
-        accountId: account.accountId,
-        fromNumber: toWhatsAppId(account.config.fromNumber),
-        statusCallbackUrl: statusCallbackUrl(account.config, account.accountId),
-        dmPolicy: resolveDmPolicy(account.config),
-        allowFrom: normalizedAllowFrom(account.config.allowFrom),
-        inboundDir,
-        mediaMaxBytes: Math.max(1, account.config.mediaMaxMb || 25) * 1024 * 1024,
-        typingIndicators: account.config.typingIndicators === true,
-        typingTimeoutMs: account.config.typingTimeoutMs,
-        sendTypingIndicator: (messageSid: string) =>
-          sendTwilioTypingIndicator({
-            accountSid: params.accountSid,
-            authToken: params.authToken,
-            messageSid,
-            timeoutMs: account.config.typingTimeoutMs,
-          }),
-      };
-    });
+export function createWebhookAccountConfig(
+  account: ResolvedTwilioAccount,
+  inboundBaseDir: string,
+  deps: { sendTypingIndicator?: typeof sendTwilioTypingIndicator } = {},
+): import('./webhook.js').WebhookAccountConfig {
+  const inboundDir = path.join(inboundBaseDir, account.accountId);
+  fs.mkdirSync(inboundDir, { recursive: true });
+  return {
+    accountId: account.accountId,
+    accountSid: account.accountSid,
+    authToken: account.authToken,
+    webhookUrl: account.config.webhookUrl,
+    fromNumber: toWhatsAppId(account.config.fromNumber),
+    statusCallbackUrl: statusCallbackUrl(account.config, account.accountId),
+    dmPolicy: resolveDmPolicy(account.config),
+    allowFrom: normalizedAllowFrom(account.config.allowFrom),
+    inboundDir,
+    mediaMaxBytes: Math.max(1, account.config.mediaMaxMb || 25) * 1024 * 1024,
+    typingIndicators: account.config.typingIndicators === true,
+    typingTimeoutMs: account.config.typingTimeoutMs,
+    sendTypingIndicator: (messageSid: string) =>
+      (deps.sendTypingIndicator || sendTwilioTypingIndicator)({
+        accountSid: account.accountSid,
+        authToken: account.authToken,
+        messageSid,
+        timeoutMs: account.config.typingTimeoutMs,
+      }),
+  };
 }
 
-async function sendWithConfig(params: {
+function activeWebhookAccounts(): import('./webhook.js').WebhookAccountConfig[] {
+  return Array.from(startedTwilioAccounts.values(), (started) => started.webhookAccount);
+}
+
+function sharedWebhookLogger() {
+  const currentLog = () => Array.from(startedTwilioAccounts.values())[0]?.ctx.log;
+  return {
+    info: (message: string) => currentLog()?.info?.(message),
+    warn: (message: string) => logWarn(currentLog(), message),
+    error: (message: string) => currentLog()?.error?.(message),
+  };
+}
+
+export async function sendWithConfig(params: {
   config: ResolvedTwilioAccountConfig;
   accountId: string;
   accountSid: string;
@@ -539,11 +565,8 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
     setup: {
       resolveChannelSetupStatus: ({ cfg }) => {
         const channelCfg = readChannelConfig(cfg);
-        const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
-        const authToken = process.env.TWILIO_AUTH_TOKEN || '';
 
         if (!channelCfg?.enabled) return { status: 'not-configured' };
-        if (!accountSid || !authToken) return { status: 'not-configured', hint: 'Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN' };
         if (!channelCfg.webhookUrl) return { status: 'not-configured', hint: 'Set channels.twilio-whatsapp.webhookUrl' };
         const accountIds = listTwilioAccountIds(cfg);
         if (accountIds.length === 0) {
@@ -551,8 +574,13 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         }
         for (const accountId of accountIds) {
           const accountCfg = resolveMergedAccountConfig(channelCfg, accountId);
+          if (accountCfg?.enabled === false) continue;
           if (!accountCfg?.fromNumber) {
             return { status: 'not-configured', hint: `Set channels.twilio-whatsapp.accounts.${accountId}.fromNumber` };
+          }
+          const credentialHint = credentialConfigurationHint(accountId, accountCfg);
+          if (credentialHint) {
+            return { status: 'not-configured', hint: credentialHint };
           }
           const dmPolicy = resolveDmPolicy(accountCfg);
           const allowFrom = accountCfg.allowFrom || [];
@@ -572,6 +600,10 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         return { status: 'configured' };
       },
     },
+    secrets: {
+      secretTargetRegistryEntries,
+      collectRuntimeConfigAssignments,
+    },
     status: {
       resolveAccountStatus: async ({ account }) => ({
         accountId: account.accountId,
@@ -589,7 +621,7 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
       startAccount: async (ctx) => {
         const account = ctx.account;
         const { accountSid, authToken } = account;
-        const { fromNumber, webhookUrl } = account.config;
+        const { fromNumber } = account.config;
 
         if (hasGroupCompatibilityConfig(account.config)) {
           logWarn(
@@ -608,7 +640,12 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         fs.mkdirSync(inboundDir, { recursive: true });
         fs.mkdirSync(outboundDir, { recursive: true });
 
-        startedTwilioAccounts.set(account.accountId, { account, ctx });
+        const started: StartedTwilioAccount = {
+          account,
+          ctx,
+          webhookAccount: createWebhookAccountConfig(account, inboundDir),
+        };
+        startedTwilioAccounts.set(account.accountId, started);
 
         const dispatch = async (msg: InboundMessage) => {
           const active = startedTwilioAccounts.get(msg.accountId);
@@ -802,69 +839,31 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
           }
         };
 
-        const webhookHandler = createWebhookHandler(
-          {
-            accountSid,
-            authToken,
-            webhookUrl,
-            webhookPaths: INBOUND_WEBHOOK_PATHS,
-            accounts: resolveWebhookAccounts({ cfg: ctx.cfg, inboundBaseDir: inboundDir, accountSid, authToken }),
-            log: {
-              info: (message) => ctx.log?.info?.(message),
-              warn: (message) => logWarn(ctx.log, message),
-              error: (message) => ctx.log?.error?.(message),
-            },
-          },
-          dispatch,
-        );
-
-        const unregisterWebhooks = INBOUND_WEBHOOK_PATHS.map((path) =>
-          registerPluginHttpRoute({
-            path,
-            auth: 'plugin',
-            replaceExisting: true,
-            pluginId: CHANNEL_KEY,
-            accountId: account.accountId,
-            handler: webhookHandler,
-          }),
-        );
-
-        const unregisterStatus = registerPluginHttpRoute({
-          path: '/webhook/twilio-whatsapp/status',
-          auth: 'plugin',
-          replaceExisting: true,
-          pluginId: CHANNEL_KEY,
-          accountId: account.accountId,
-          handler: createStatusCallbackHandler({
-            authToken,
-            webhookUrl,
-            accounts: resolveWebhookAccounts({ cfg: ctx.cfg, inboundBaseDir: inboundDir, accountSid, authToken }),
-            log: {
-              info: (message) => ctx.log?.info?.(message),
-              warn: (message) => logWarn(ctx.log, message),
-              error: (message) => ctx.log?.error?.(message),
-            },
-          }),
-        });
-
-        const unregisterMedia = registerPluginHttpRoute({
-          path: '/webhook/twilio-whatsapp/media',
-          auth: 'plugin',
-          match: 'prefix',
-          replaceExisting: true,
-          pluginId: CHANNEL_KEY,
-          accountId: account.accountId,
-          handler: createMediaServeHandler(outboundDir),
-        });
-
-        const unregisterHealth = registerPluginHttpRoute({
-          path: '/webhook/twilio-whatsapp/health',
-          auth: 'plugin',
-          replaceExisting: true,
-          pluginId: CHANNEL_KEY,
-          accountId: account.accountId,
-          handler: createHealthHandler(),
-        });
+        const logger = sharedWebhookLogger();
+        let releaseSharedRoutes: () => void;
+        try {
+          releaseSharedRoutes = sharedRouteLifecycle.acquire({
+            inbound: createWebhookHandler(
+              {
+                webhookPaths: [...INBOUND_WEBHOOK_PATHS],
+                accounts: activeWebhookAccounts,
+                log: logger,
+              },
+              dispatch,
+            ),
+            status: createStatusCallbackHandler({
+              accounts: activeWebhookAccounts,
+              log: logger,
+            }),
+            media: createMediaServeHandler(outboundDir),
+            health: createHealthHandler(),
+          });
+        } catch (error) {
+          if (startedTwilioAccounts.get(account.accountId) === started) {
+            startedTwilioAccounts.delete(account.accountId);
+          }
+          throw error;
+        }
 
         ctx.log?.info(`[${account.accountId}] Twilio WhatsApp channel started (from=${stableIdHash(fromNumber)})`);
 
@@ -874,11 +873,10 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
           });
         }
 
-        unregisterWebhooks.forEach((unregisterWebhook) => unregisterWebhook());
-        unregisterStatus();
-        unregisterMedia();
-        unregisterHealth();
-        startedTwilioAccounts.delete(account.accountId);
+        if (startedTwilioAccounts.get(account.accountId) === started) {
+          startedTwilioAccounts.delete(account.accountId);
+        }
+        releaseSharedRoutes();
         ctx.log?.info(`[${account.accountId}] Twilio WhatsApp channel stopped`);
       },
     },

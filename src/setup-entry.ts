@@ -1,48 +1,117 @@
 import { defineSetupPluginEntry } from 'openclaw/plugin-sdk/channel-core';
+import {
+  credentialConfigurationHint,
+  type TwilioCredentialConfig,
+} from './credentials.js';
+import { collectRuntimeConfigAssignments, secretTargetRegistryEntries } from './secret-contract.js';
+
+interface TwilioSetupAccountConfig extends TwilioCredentialConfig {
+  name?: string;
+  enabled?: boolean;
+  fromNumber?: string;
+  dmPolicy?: 'allowlist' | 'open';
+  allowFrom?: string[];
+}
 
 interface TwilioWhatsAppConfig {
   enabled?: boolean;
   webhookUrl?: string;
-  accounts?: Record<string, { fromNumber?: string; dmPolicy?: 'allowlist' | 'open'; allowFrom?: string[] }>;
+  defaultAccount?: string;
+  accounts?: Record<string, TwilioSetupAccountConfig>;
+}
+
+interface InspectedTwilioAccount {
+  accountId: string;
+  name: string;
+  enabled: boolean;
+  configured: boolean;
+  hint?: string;
+}
+
+function readSetupConfig(cfg: any): TwilioWhatsAppConfig | undefined {
+  const value = cfg?.channels?.['twilio-whatsapp'];
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as TwilioWhatsAppConfig)
+    : undefined;
+}
+
+function enabledAccountEntries(cfg: any): Array<[string, TwilioSetupAccountConfig]> {
+  const accounts = readSetupConfig(cfg)?.accounts;
+  if (!accounts || typeof accounts !== 'object') return [];
+  return Object.entries(accounts).filter(([, account]) => account?.enabled !== false);
+}
+
+function inspectSetupAccount(cfg: any, requestedAccountId?: string | null): InspectedTwilioAccount {
+  const channel = readSetupConfig(cfg);
+  const entries = enabledAccountEntries(cfg);
+  const accountId = requestedAccountId || channel?.defaultAccount || entries[0]?.[0] || 'default';
+  const account = entries.find(([candidateId]) => candidateId === accountId)?.[1];
+  const enabled = channel?.enabled === true && Boolean(account);
+
+  let hint: string | undefined;
+  if (!channel?.webhookUrl) {
+    hint = 'Set channels.twilio-whatsapp.webhookUrl';
+  } else if (!account) {
+    hint = `Set channels.twilio-whatsapp.accounts.${accountId}.fromNumber`;
+  } else if (!account.fromNumber) {
+    hint = `Set channels.twilio-whatsapp.accounts.${accountId}.fromNumber`;
+  } else {
+    hint = credentialConfigurationHint(accountId, account);
+    if (!hint) {
+      const dmPolicy = account.dmPolicy === 'open' ? 'open' : 'allowlist';
+      const allowFrom = account.allowFrom || [];
+      if (dmPolicy === 'allowlist' && allowFrom.length === 0) {
+        hint = `Set channels.twilio-whatsapp.accounts.${accountId}.allowFrom or change dmPolicy to open`;
+      } else if (dmPolicy === 'open' && !allowFrom.includes('*')) {
+        hint = `Set channels.twilio-whatsapp.accounts.${accountId}.allowFrom to ["*"]`;
+      }
+    }
+  }
+
+  return {
+    accountId,
+    name: account?.name || `Twilio WhatsApp (${accountId})`,
+    enabled,
+    configured: enabled && !hint,
+    ...(hint ? { hint } : {}),
+  };
 }
 
 export default defineSetupPluginEntry({
   id: 'twilio-whatsapp',
-  channel: {
+  meta: {
     id: 'twilio-whatsapp',
-    inspectAccount: ({ cfg }) => {
-      const c = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
-      const hasCreds = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN);
-      const enabled = !!c?.enabled;
-      const accounts = c?.accounts && typeof c.accounts === 'object' ? Object.entries(c.accounts) : [];
-      const firstIncomplete = accounts.find(([, account]) => !account?.fromNumber);
-      const firstAllowlistMissing = accounts.find(
-        ([, account]) => (account?.dmPolicy ?? 'allowlist') === 'allowlist' && !(account?.allowFrom || []).length,
-      );
-      const firstOpenWildcardMissing = accounts.find(
-        ([, account]) => account?.dmPolicy === 'open' && !(account?.allowFrom || []).includes('*'),
-      );
-      const configured = !!(
-        c?.webhookUrl &&
-        accounts.length > 0 &&
-        !firstIncomplete &&
-        !firstAllowlistMissing &&
-        !firstOpenWildcardMissing
-      ) && hasCreds;
-      const hint = !hasCreds
-        ? 'Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN'
-        : !c?.webhookUrl
-        ? 'Set channels.twilio-whatsapp.webhookUrl'
-        : accounts.length === 0
-        ? 'Set channels.twilio-whatsapp.accounts.<accountId>.fromNumber'
-        : firstIncomplete
-        ? `Set channels.twilio-whatsapp.accounts.${firstIncomplete[0]}.fromNumber`
-        : firstAllowlistMissing
-        ? `Set channels.twilio-whatsapp.accounts.${firstAllowlistMissing[0]}.allowFrom or change dmPolicy to open`
-        : firstOpenWildcardMissing
-        ? `Set channels.twilio-whatsapp.accounts.${firstOpenWildcardMissing[0]}.allowFrom to ["*"]`
-        : undefined;
-      return { enabled, configured, hint };
+    label: 'Twilio WhatsApp',
+    selectionLabel: 'WhatsApp (Twilio Business API)',
+    docsPath: '/channels/twilio-whatsapp',
+    blurb: 'WhatsApp channel via Twilio Business API.',
+  },
+  capabilities: {
+    chatTypes: ['direct'],
+    media: true,
+  },
+  config: {
+    listAccountIds: (cfg: any) => enabledAccountEntries(cfg).map(([accountId]) => accountId),
+    defaultAccountId: (cfg: any) => {
+      const channel = readSetupConfig(cfg);
+      const ids = enabledAccountEntries(cfg).map(([accountId]) => accountId);
+      return channel?.defaultAccount && ids.includes(channel.defaultAccount)
+        ? channel.defaultAccount
+        : ids[0] || 'default';
     },
+    resolveAccount: (cfg: any, accountId?: string | null) => inspectSetupAccount(cfg, accountId),
+    inspectAccount: (cfg: any, accountId?: string | null) => inspectSetupAccount(cfg, accountId),
+    isConfigured: (account: InspectedTwilioAccount) => account.configured,
+  },
+  status: {
+    resolveAccountState: ({ configured }: { configured: boolean }) =>
+      configured ? 'ready' : 'not configured',
+  },
+  outbound: {
+    deliveryMode: 'gateway',
+  },
+  secrets: {
+    secretTargetRegistryEntries,
+    collectRuntimeConfigAssignments,
   },
 });

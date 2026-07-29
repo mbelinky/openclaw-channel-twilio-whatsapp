@@ -14,12 +14,10 @@ import { downloadTwilioMedia, getExtensionForType } from './media.js';
 import { emitTimingEvent, logTiming } from './diagnostics.js';
 
 export interface WebhookConfig {
-  accountSid: string;
-  authToken: string;
-  webhookUrl: string;
   webhookPaths?: string[];
   bodyMaxBytes?: number;
-  accounts: WebhookAccountConfig[];
+  accounts: WebhookAccountConfig[] | (() => WebhookAccountConfig[]);
+  downloadMedia?: typeof downloadTwilioMedia;
   log?: WebhookLogger;
 }
 
@@ -27,6 +25,9 @@ const DEFAULT_WEBHOOK_BODY_MAX_BYTES = 256 * 1024;
 
 export interface WebhookAccountConfig {
   accountId: string;
+  accountSid: string;
+  authToken: string;
+  webhookUrl: string;
   fromNumber: string;
   statusCallbackUrl?: string;
   dmPolicy?: 'allowlist' | 'open';
@@ -121,6 +122,10 @@ function findAccountByRecipient(
   return accounts.find((account) => fromWhatsAppId(account.fromNumber).replace(/^\+?/, '+') === recipientPhone);
 }
 
+function resolveAccounts(config: Pick<WebhookConfig, 'accounts'>): WebhookAccountConfig[] {
+  return typeof config.accounts === 'function' ? config.accounts() : config.accounts;
+}
+
 export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const startedAt = Date.now();
@@ -153,33 +158,7 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
         chatId: senderHash,
       });
 
-      const valid = validateTwilioSignature(
-        req,
-        params,
-        config.authToken,
-        config.webhookUrl,
-        config.webhookPaths || ['/webhook/twilio-whatsapp'],
-      );
-      if (!valid) {
-        logTiming(config.log, 'webhook_rejected', {
-          messageSid,
-          senderHash,
-          reason: 'invalid_signature',
-          durationMs: Date.now() - startedAt,
-        });
-        emitTimingEvent({
-          type: 'webhook.error',
-          channel: 'twilio-whatsapp',
-          updateType: 'inbound',
-          chatId: senderHash,
-          error: 'invalid_signature',
-        });
-        res.writeHead(403);
-        res.end('Invalid signature');
-        return;
-      }
-
-      const account = to ? findAccountByRecipient(config.accounts, to) : undefined;
+      const account = to ? findAccountByRecipient(resolveAccounts(config), to) : undefined;
       if (!from || !to || !account) {
         logTiming(config.log, 'webhook_rejected', {
           messageSid,
@@ -203,6 +182,32 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
         }
         res.writeHead(403);
         res.end('Forbidden');
+        return;
+      }
+
+      const valid = validateTwilioSignature(
+        req,
+        params,
+        account.authToken,
+        account.webhookUrl,
+        config.webhookPaths || ['/webhook/twilio-whatsapp'],
+      );
+      if (!valid) {
+        logTiming(config.log, 'webhook_rejected', {
+          messageSid,
+          senderHash,
+          reason: 'invalid_signature',
+          durationMs: Date.now() - startedAt,
+        });
+        emitTimingEvent({
+          type: 'webhook.error',
+          channel: 'twilio-whatsapp',
+          updateType: 'inbound',
+          chatId: senderHash,
+          error: 'invalid_signature',
+        });
+        res.writeHead(403);
+        res.end('Invalid signature');
         return;
       }
 
@@ -284,10 +289,15 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
               mediaIndex: i,
             });
             try {
-              const buffer = await downloadTwilioMedia(mediaUrl, config.accountSid, config.authToken, {
-                maxBytes: account.mediaMaxBytes,
-                timeoutMs: account.mediaTimeoutMs,
-              });
+              const buffer = await (config.downloadMedia || downloadTwilioMedia)(
+                mediaUrl,
+                account.accountSid,
+                account.authToken,
+                {
+                  maxBytes: account.mediaMaxBytes,
+                  timeoutMs: account.mediaTimeoutMs,
+                },
+              );
               const ext = getExtensionForType(contentType);
               const filePath = path.join(account.inboundDir, `${messageSid}-${i}${ext}`);
               fs.writeFileSync(filePath, buffer);
@@ -426,7 +436,7 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
 }
 
 export function createStatusCallbackHandler(
-  config: Pick<WebhookConfig, 'authToken' | 'webhookUrl' | 'bodyMaxBytes' | 'accounts' | 'log'>,
+  config: Pick<WebhookConfig, 'bodyMaxBytes' | 'accounts' | 'log'>,
 ) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -434,13 +444,25 @@ export function createStatusCallbackHandler(
         maxBytes: config.bodyMaxBytes ?? DEFAULT_WEBHOOK_BODY_MAX_BYTES,
       });
       const params = parseFormBody(body);
+      const accounts = resolveAccounts(config);
+      const query = new URLSearchParams(requestQuery(req).replace(/^\?/, ''));
+      const accountIdFromQuery = query.get('accountId') || undefined;
+      const account =
+        (accountIdFromQuery
+          ? accounts.find((entry) => entry.accountId === accountIdFromQuery)
+          : undefined) || findAccountByRecipient(accounts, params.From || '');
+      if (!account) {
+        res.writeHead(403);
+        res.end('Forbidden');
+        return;
+      }
       const valid = validateTwilioSignature(
         req,
         params,
-        config.authToken,
-        config.webhookUrl,
+        account.authToken,
+        account.webhookUrl,
         '/webhook/twilio-whatsapp/status',
-        config.accounts.map((account) => account.statusCallbackUrl).filter(Boolean) as string[],
+        account.statusCallbackUrl,
       );
       if (!valid) {
         res.writeHead(403);
@@ -451,13 +473,7 @@ export function createStatusCallbackHandler(
       const status = params.MessageStatus || params.SmsStatus || 'unknown';
       const errorCode = params.ErrorCode;
       const errorMessage = params.ErrorMessage;
-      const query = new URLSearchParams(requestQuery(req).replace(/^\?/, ''));
-      const accountIdFromQuery = query.get('accountId') || undefined;
-      const account =
-        (accountIdFromQuery
-          ? config.accounts.find((entry) => entry.accountId === accountIdFromQuery)
-          : undefined) || findAccountByRecipient(config.accounts, params.From || '');
-      const accountField = account ? ` accountId=${account.accountId}` : ' accountId=unknown';
+      const accountField = ` accountId=${account.accountId}`;
       const line = `[twilio-whatsapp] status${accountField} messageSid=${messageSid} status=${status}${
         errorCode ? ` errorCode=${errorCode}` : ''
       }${errorMessage ? ` error=${errorMessage}` : ''}`;

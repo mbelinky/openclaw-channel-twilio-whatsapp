@@ -6,6 +6,17 @@ const manifest = JSON.parse(fs.readFileSync(new URL('../openclaw.plugin.json', i
 const schema = manifest.channelConfigs['twilio-whatsapp'].schema;
 
 function validate(schemaNode, value, path = '$') {
+  if (schemaNode.$ref) {
+    const segments = schemaNode.$ref.replace(/^#\//, '').split('/');
+    const resolved = segments.reduce((current, segment) => current?.[segment], schema);
+    return resolved ? validate(resolved, value, path) : [`${path} has unresolved schema ref ${schemaNode.$ref}`];
+  }
+  if (schemaNode.anyOf) {
+    const results = schemaNode.anyOf.map((candidate) => validate(candidate, value, path));
+    return results.some((candidateErrors) => candidateErrors.length === 0)
+      ? []
+      : results.flat();
+  }
   const errors = [];
   const fail = (message) => errors.push(`${path} ${message}`);
 
@@ -51,6 +62,9 @@ function validate(schemaNode, value, path = '$') {
     }
     if (schemaNode.pattern && !new RegExp(schemaNode.pattern).test(value)) {
       fail(`must match ${schemaNode.pattern}`);
+    }
+    if (schemaNode.minLength !== undefined && value.length < schemaNode.minLength) {
+      fail(`must have length >= ${schemaNode.minLength}`);
     }
     if (schemaNode.format === 'uri') {
       try {
@@ -105,6 +119,8 @@ test('channel schema accepts multi-account prod-shaped config with group and del
     dmHistoryLimit: 2,
     accounts: {
       vinalia: {
+        accountSid: { source: 'env', provider: 'default', id: 'TWILIO_VINALIA_ACCOUNT_SID' },
+        authToken: { source: 'env', provider: 'default', id: 'TWILIO_VINALIA_AUTH_TOKEN' },
         dmPolicy: 'allowlist',
         allowFrom: ['+14155551234', '+14155555678'],
         groupPolicy: 'disabled',
@@ -160,4 +176,21 @@ test('channel schema still rejects unknown channel config keys', () => {
   });
 
   assert.ok(errors.some((error) => error.includes('additional property unexpected')));
+});
+
+test('channel schema rejects incomplete or malformed credential refs', () => {
+  const errors = validate(schema, {
+    enabled: true,
+    webhookUrl: 'https://twilio.example.test',
+    accounts: {
+      vinalia: {
+        accountSid: { source: 'env', provider: 'INVALID PROVIDER', id: '' },
+        authToken: { source: 'env', provider: 'default' },
+        fromNumber: '+14155550000',
+      },
+    },
+  });
+
+  assert.ok(errors.some((error) => error.includes('provider must match')));
+  assert.ok(errors.some((error) => error.includes('id is required')));
 });

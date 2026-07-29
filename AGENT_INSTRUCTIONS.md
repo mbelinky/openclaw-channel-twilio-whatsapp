@@ -25,8 +25,8 @@ Ask for all of these before touching any files. Don't make up values.
 
 | What to ask | Format / example | Used in |
 |---|---|---|
-| Twilio Account SID | `AC...` (34 chars) | `TWILIO_ACCOUNT_SID` env var |
-| Twilio Auth Token | secret string | `TWILIO_AUTH_TOKEN` env var |
+| Twilio Account SID per account | `AC...` (34 chars) | Account-scoped SecretRef |
+| Twilio Auth Token per account | secret string | Account-scoped SecretRef |
 | OpenClaw account id per sender | stable id, e.g. `vinalia`, `mkps` | `accounts.<id>` and `bindings[].match.accountId` |
 | Twilio WhatsApp sender number per account | E.164, e.g. `+14155550000` (Sandbox: `+14155238886`) | `accounts.<id>.fromNumber` |
 | Allowed senders | E.164 list for `allowlist`; `["*"]` for `open` | `accounts.<id>.allowFrom` |
@@ -93,11 +93,15 @@ Merge this into the user's existing `openclaw.json` (don't overwrite the whole f
       "webhookUrl": "https://your-public-host.example.com",
       "accounts": {
         "vinalia": {
+          "accountSid": { "source": "env", "provider": "default", "id": "TWILIO_VINALIA_ACCOUNT_SID" },
+          "authToken": { "source": "env", "provider": "default", "id": "TWILIO_VINALIA_AUTH_TOKEN" },
           "dmPolicy": "allowlist",
           "allowFrom": ["+14155551234"],
           "fromNumber": "+14155550000"
         },
         "mkps": {
+          "accountSid": { "source": "env", "provider": "default", "id": "TWILIO_MKPS_ACCOUNT_SID" },
+          "authToken": { "source": "env", "provider": "default", "id": "TWILIO_MKPS_AUTH_TOKEN" },
           "dmPolicy": "open",
           "allowFrom": ["*"],
           "fromNumber": "+447427807929"
@@ -128,14 +132,18 @@ Also:
 - If `plugins.allow` already exists, **append** to it; don't replace.
 - `accounts.<id>.dmPolicy: "open"` requires `accounts.<id>.allowFrom: ["*"]` and is strongly discouraged — anyone with that sender's number can talk to the bound agent and rack up Twilio charges. Default to `"allowlist"` unless the sender is intentionally public.
 - Do not write legacy top-level `fromNumber`, `dmPolicy`, or `allowFrom`; v3 rejects them. Use `accounts.<id>.*`.
+- For independent Twilio accounts/WABAs, set both `accountSid` and `authToken` on every enabled account. Use SecretRefs, not plaintext.
+- Never set only one account-scoped credential. A partial pair intentionally fails closed and does not mix with the global fallback.
 
 ## Step 3 — set the secrets
 
-The Twilio credentials go in environment variables, **not** in `openclaw.json`:
+Account-scoped credentials use OpenClaw SecretRefs in `openclaw.json`; the values themselves stay in the referenced provider. For env refs from the example:
 
 ```bash
-TWILIO_ACCOUNT_SID=AC...
-TWILIO_AUTH_TOKEN=...
+TWILIO_VINALIA_ACCOUNT_SID=AC...
+TWILIO_VINALIA_AUTH_TOKEN=...
+TWILIO_MKPS_ACCOUNT_SID=AC...
+TWILIO_MKPS_AUTH_TOKEN=...
 ```
 
 How to set these depends on the deployment:
@@ -143,7 +151,9 @@ How to set these depends on the deployment:
 - **systemd / shell launch:** add to the unit's `Environment=` or the launch script.
 - **Kubernetes:** add to the `OpenClawInstance` `spec.env` (or a referenced Secret).
 
-Never put `TWILIO_AUTH_TOKEN` into `openclaw.json`, into a committed file, or echo it to the terminal in a way that gets logged.
+The original `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` global pair is supported only as single-Twilio-account compatibility mode. It applies to an account only when that account supplies neither account-scoped field.
+
+Never put an auth-token value into `openclaw.json`, into a committed file, or echo it to the terminal in a way that gets logged.
 
 ## Step 4 — restart (or hot-reload) the gateway
 
@@ -184,6 +194,8 @@ Run these in order. Stop and debug at the first failure.
 | Plugin install writes fail with `EACCES` | Container `--user` doesn't match host data-dir owner | Set `--user` to match (commonly `1000:1000`) |
 | All inbound messages get 403 | `webhookUrl` doesn't match what Twilio is POSTing to | Set `webhookUrl` to the exact public origin (scheme + host, no trailing slash, no path) |
 | Gateway rejects config mentioning top-level `fromNumber` | Legacy v2 config shape | Move sender settings under `channels.twilio-whatsapp.accounts.<id>` |
+| One account reports incomplete Twilio credentials | Only `accountSid` or `authToken` is set on that account | Configure both account-scoped SecretRefs, or remove both to use the global compatibility pair |
+| One sender gets signature failures after multi-account setup | Its `To` number is mapped to an account whose auth token belongs to another Twilio account | Fix that account's credential refs; inbound signatures are validated only with the matched account token |
 | Inbound messages get 403 only from one user number | Number not in that account's `allowFrom`, or has `whatsapp:` prefix in config | Add as E.164 without prefix under the right account |
 | Inbound messages get 403 for one Twilio sender | Twilio `To` does not match any `accounts.<id>.fromNumber` | Add or fix the account's E.164 sender number |
 | Text replies arrive but images don't | Old gateway/plugin or media route issue | Upgrade to gateway `>= 2026.6.11` and plugin `>= 3.0.0` |
@@ -196,7 +208,7 @@ Don't promise the user any of these — they're framework / Twilio limitations:
 - **No group chats.** Twilio's WhatsApp Business API is 1:1 only.
 - **No reactions, no typing indicators, no read receipts as agent actions.** Twilio doesn't expose these.
 - **No threaded replies.**
-- **No separate Twilio credentials per OpenClaw account.** Multiple WhatsApp senders are supported, but they share `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`.
+- **Credential pairs are atomic.** An enabled account uses its complete account-scoped pair, or the complete global compatibility pair when neither scoped field is present.
 
 ## What to tell the user about cost
 

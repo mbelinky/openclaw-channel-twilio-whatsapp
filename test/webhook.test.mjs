@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import twilio from 'twilio';
@@ -39,6 +42,9 @@ function response() {
 function accountConfig(overrides = {}) {
   return {
     accountId: 'vinalia',
+    accountSid: 'AC-vinalia',
+    authToken: 'token',
+    webhookUrl: 'https://twilio.example.test',
     fromNumber: 'whatsapp:+14155550000',
     allowFrom: new Set(['+14155551234']),
     inboundDir: '/tmp',
@@ -48,9 +54,6 @@ function accountConfig(overrides = {}) {
 
 function webhookConfig(overrides = {}, accountOverrides = {}) {
   return {
-    accountSid: 'AC123',
-    authToken: 'token',
-    webhookUrl: 'https://twilio.example.test',
     accounts: [accountConfig(accountOverrides)],
     ...overrides,
   };
@@ -71,8 +74,9 @@ test('inbound webhook accepts forwarded public URL signatures and dispatches aft
   const infos = [];
   const handler = createWebhookHandler(
     webhookConfig(
-      { webhookUrl: 'https://configured.example.com', log: { info: (message) => infos.push(message) } },
+      { log: { info: (message) => infos.push(message) } },
       {
+        webhookUrl: 'https://configured.example.com',
         typingIndicators: true,
         sendTypingIndicator: async (messageSid) => {
           typing.push(messageSid);
@@ -213,6 +217,8 @@ test('inbound webhook routes by Twilio To number across configured accounts', as
         }),
         accountConfig({
           accountId: 'mkps',
+          accountSid: 'AC-mkps',
+          authToken: 'mkps-token',
           fromNumber: 'whatsapp:+447427807929',
           dmPolicy: 'open',
           allowFrom: new Set(['*']),
@@ -225,12 +231,158 @@ test('inbound webhook routes by Twilio To number across configured accounts', as
   );
   const res = response();
 
-  await handler(request({ url: '/webhook/twilio-whatsapp', params, headers: signedHeaders(url, params) }), res);
+  await handler(
+    request({ url: '/webhook/twilio-whatsapp', params, headers: signedHeaders(url, params, 'mkps-token') }),
+    res,
+  );
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(res.statusCode, 200);
   assert.equal(dispatched[0].accountId, 'mkps');
   assert.equal(dispatched[0].senderId, '+447700900123');
+});
+
+test('inbound signature is validated only with the recipient account token', async () => {
+  const url = 'https://twilio.example.test/webhook/twilio-whatsapp';
+  const accounts = [
+    accountConfig({
+      accountId: 'account-a',
+      accountSid: 'AC-a',
+      authToken: 'token-a',
+      fromNumber: 'whatsapp:+14155550001',
+    }),
+    accountConfig({
+      accountId: 'account-b',
+      accountSid: 'AC-b',
+      authToken: 'token-b',
+      fromNumber: 'whatsapp:+14155550002',
+    }),
+  ];
+  const handler = createWebhookHandler(webhookConfig({ accounts }), () => {});
+  const baseParams = {
+    MessageSid: 'SMaccount',
+    From: 'whatsapp:+14155551234',
+    Body: 'hello',
+    NumMedia: '0',
+  };
+
+  const accountAResponse = response();
+  const accountAParams = { ...baseParams, To: accounts[0].fromNumber };
+  await handler(
+    request({ url: '/webhook/twilio-whatsapp', params: accountAParams, headers: signedHeaders(url, accountAParams, 'token-a') }),
+    accountAResponse,
+  );
+  assert.equal(accountAResponse.statusCode, 200);
+
+  const wrongAccountResponse = response();
+  const accountBParams = { ...baseParams, To: accounts[1].fromNumber };
+  await handler(
+    request({ url: '/webhook/twilio-whatsapp', params: accountBParams, headers: signedHeaders(url, accountBParams, 'token-a') }),
+    wrongAccountResponse,
+  );
+  assert.equal(wrongAccountResponse.statusCode, 403);
+  assert.equal(wrongAccountResponse.body, 'Invalid signature');
+
+  const accountBResponse = response();
+  await handler(
+    request({ url: '/webhook/twilio-whatsapp', params: accountBParams, headers: signedHeaders(url, accountBParams, 'token-b') }),
+    accountBResponse,
+  );
+  assert.equal(accountBResponse.statusCode, 200);
+});
+
+test('one shared inbound handler reflects account starts and stops dynamically', async () => {
+  const url = 'https://twilio.example.test/webhook/twilio-whatsapp';
+  const accountA = accountConfig({
+    accountId: 'account-a',
+    authToken: 'token-a',
+    fromNumber: 'whatsapp:+14155550001',
+  });
+  const accountB = accountConfig({
+    accountId: 'account-b',
+    authToken: 'token-b',
+    fromNumber: 'whatsapp:+14155550002',
+  });
+  let activeAccounts = [accountA];
+  const handler = createWebhookHandler(
+    webhookConfig({ accounts: () => activeAccounts }),
+    () => {},
+  );
+  const requestFor = async (account, token) => {
+    const params = {
+      MessageSid: `SM-${account.accountId}`,
+      From: 'whatsapp:+14155551234',
+      To: account.fromNumber,
+      Body: 'hello',
+      NumMedia: '0',
+    };
+    const res = response();
+    await handler(
+      request({
+        url: '/webhook/twilio-whatsapp',
+        params,
+        headers: signedHeaders(url, params, token),
+      }),
+      res,
+    );
+    return res;
+  };
+
+  assert.equal((await requestFor(accountA, 'token-a')).statusCode, 200);
+  activeAccounts = [accountA, accountB];
+  assert.equal((await requestFor(accountB, 'token-b')).statusCode, 200);
+  activeAccounts = [accountB];
+  assert.equal((await requestFor(accountA, 'token-a')).statusCode, 403);
+  assert.equal((await requestFor(accountB, 'token-b')).statusCode, 200);
+});
+
+test('inbound media uses the recipient account credentials', async (t) => {
+  const inboundDir = fs.mkdtempSync(path.join(os.tmpdir(), 'twilio-media-account-'));
+  t.after(() => fs.rmSync(inboundDir, { recursive: true, force: true }));
+  const downloads = [];
+  const params = {
+    MessageSid: 'SMmedia',
+    From: 'whatsapp:+14155551234',
+    To: 'whatsapp:+14155550002',
+    Body: 'voice',
+    NumMedia: '1',
+    MediaUrl0: 'https://api.twilio.test/media/1',
+    MediaContentType0: 'audio/ogg',
+  };
+  const url = 'https://twilio.example.test/webhook/twilio-whatsapp';
+  const handler = createWebhookHandler(
+    webhookConfig({
+      accounts: [
+        accountConfig({
+          accountId: 'account-b',
+          accountSid: 'AC-b',
+          authToken: 'token-b',
+          fromNumber: params.To,
+          inboundDir,
+        }),
+      ],
+      downloadMedia: async (mediaUrl, accountSid, authToken) => {
+        downloads.push({ mediaUrl, accountSid, authToken });
+        return Buffer.from('voice');
+      },
+    }),
+    () => {},
+  );
+  const res = response();
+
+  await handler(
+    request({ url: '/webhook/twilio-whatsapp', params, headers: signedHeaders(url, params, 'token-b') }),
+    res,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(downloads, [
+    {
+      mediaUrl: 'https://api.twilio.test/media/1',
+      accountSid: 'AC-b',
+      authToken: 'token-b',
+    },
+  ]);
 });
 
 test('inbound webhook does not send typing indicators unless explicitly enabled', async () => {
@@ -387,8 +539,6 @@ test('status callback validates signature and logs failed delivery', async () =>
   const url = 'https://twilio.example.test/webhook/twilio-whatsapp/status';
   const errors = [];
   const handler = createStatusCallbackHandler({
-    authToken: 'token',
-    webhookUrl: 'https://twilio.example.test',
     accounts: [accountConfig({ statusCallbackUrl: 'https://twilio.example.test/webhook/twilio-whatsapp/status?accountId=vinalia' })],
     log: { error: (message) => errors.push(message) },
   });
@@ -402,10 +552,87 @@ test('status callback validates signature and logs failed delivery', async () =>
   assert.match(errors[0], /errorCode=63016/);
 });
 
+test('status callback marker selects only the matching account token', async () => {
+  const params = {
+    MessageSid: 'SMstatus-b',
+    MessageStatus: 'delivered',
+    From: 'whatsapp:+14155550002',
+  };
+  const callbackUrl =
+    'https://twilio.example.test/webhook/twilio-whatsapp/status?accountId=account-b';
+  const accounts = [
+    accountConfig({
+      accountId: 'account-a',
+      authToken: 'token-a',
+      fromNumber: 'whatsapp:+14155550001',
+      statusCallbackUrl:
+        'https://twilio.example.test/webhook/twilio-whatsapp/status?accountId=account-a',
+    }),
+    accountConfig({
+      accountId: 'account-b',
+      authToken: 'token-b',
+      fromNumber: 'whatsapp:+14155550002',
+      statusCallbackUrl: callbackUrl,
+    }),
+  ];
+  const handler = createStatusCallbackHandler({ accounts });
+
+  const accepted = response();
+  await handler(
+    request({
+      url: '/webhook/twilio-whatsapp/status?accountId=account-b',
+      params,
+      headers: signedHeaders(callbackUrl, params, 'token-b'),
+    }),
+    accepted,
+  );
+  assert.equal(accepted.statusCode, 200);
+
+  const rejected = response();
+  await handler(
+    request({
+      url: '/webhook/twilio-whatsapp/status?accountId=account-b',
+      params,
+      headers: signedHeaders(callbackUrl, params, 'token-a'),
+    }),
+    rejected,
+  );
+  assert.equal(rejected.statusCode, 403);
+});
+
+test('status callback falls back to the Twilio sender when the account marker is absent', async () => {
+  const params = {
+    MessageSid: 'SMstatus-fallback',
+    MessageStatus: 'sent',
+    From: 'whatsapp:+14155550002',
+  };
+  const callbackUrl = 'https://twilio.example.test/webhook/twilio-whatsapp/status';
+  const handler = createStatusCallbackHandler({
+    accounts: [
+      accountConfig({
+        accountId: 'account-b',
+        authToken: 'token-b',
+        fromNumber: params.From,
+        statusCallbackUrl: callbackUrl,
+      }),
+    ],
+  });
+  const res = response();
+
+  await handler(
+    request({
+      url: '/webhook/twilio-whatsapp/status',
+      params,
+      headers: signedHeaders(callbackUrl, params, 'token-b'),
+    }),
+    res,
+  );
+
+  assert.equal(res.statusCode, 200);
+});
+
 test('status callback rejects oversized bodies before signature validation', async () => {
   const handler = createStatusCallbackHandler({
-    authToken: 'token',
-    webhookUrl: 'https://twilio.example.test',
     accounts: [accountConfig()],
     bodyMaxBytes: 16,
   });

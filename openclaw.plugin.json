@@ -18,6 +18,38 @@
       "schema": {
         "type": "object",
         "additionalProperties": false,
+        "$defs": {
+          "secretRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": ["env", "file", "exec"]
+              },
+              "provider": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["source", "provider", "id"]
+          },
+          "secretInput": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "$ref": "#/$defs/secretRef"
+              }
+            ]
+          }
+        },
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -46,6 +78,14 @@
                 "enabled": {
                   "type": "boolean",
                   "default": true
+                },
+                "accountSid": {
+                  "$ref": "#/$defs/secretInput",
+                  "description": "Account-scoped Twilio Account SID. Use an OpenClaw SecretRef, normally an env SecretRef."
+                },
+                "authToken": {
+                  "$ref": "#/$defs/secretInput",
+                  "description": "Account-scoped Twilio Auth Token. Use an OpenClaw SecretRef; never store the token as plaintext."
                 },
                 "fromNumber": {
                   "type": "string",
@@ -224,6 +264,15 @@
     "fromNumber": {
       "label": "Account Twilio Sender Number",
       "placeholder": "+14155550000"
+    },
+    "accounts.*.accountSid": {
+      "label": "Account Twilio Account SID",
+      "help": "Use an OpenClaw SecretRef, normally an env SecretRef."
+    },
+    "accounts.*.authToken": {
+      "label": "Account Twilio Auth Token",
+      "help": "Use an OpenClaw SecretRef. Do not store auth tokens as plaintext.",
+      "sensitive": true
     },
     "webhookUrl": {
       "label": "Public Webhook URL",

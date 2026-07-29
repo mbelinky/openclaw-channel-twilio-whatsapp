@@ -29,7 +29,7 @@ Pick this plugin when you need stability and compliance — for personal automat
 
 - **Inbound webhooks** via OpenClaw's gateway (no separate HTTP server)
 - **Twilio signature validation** on every inbound request
-- **Multi-sender accounts** so one Twilio credential set can serve multiple WhatsApp senders bound to different OpenClaw agents
+- **Independent Twilio accounts** with one account-scoped credential pair and WhatsApp sender per OpenClaw account
 - **Per-account allowlist enforcement** so each sender controls who can talk to its agent
 - **Inbound media download** with redirect-following Basic Auth
 - **Outbound media staging** — local files are served back to Twilio via UUID-randomized URLs
@@ -55,6 +55,8 @@ The agent install will write these for you — this section is for reference onl
 | `webhookUrl` | yes | Public base URL where Twilio can reach OpenClaw — used both for signature validation and media serving |
 | `statusCallbackUrl` | no (default `{webhookUrl}/webhook/twilio-whatsapp/status`) | Twilio delivery status callback URL |
 | `accounts` | yes | Map of OpenClaw account ids to WhatsApp senders |
+| `accounts.<id>.accountSid` | yes for independent Twilio accounts | Twilio Account SID as an OpenClaw SecretRef |
+| `accounts.<id>.authToken` | yes for independent Twilio accounts | Twilio Auth Token as an OpenClaw SecretRef |
 | `accounts.<id>.fromNumber` | yes | Twilio WhatsApp sender in E.164 |
 | `accounts.<id>.dmPolicy` | yes | `"allowlist"` (only `allowFrom` numbers) or `"open"` (anyone) |
 | `accounts.<id>.allowFrom` | yes | Phone numbers in E.164 format for `allowlist`; use `["*"]` with `open` |
@@ -72,6 +74,10 @@ The agent install will write these for you — this section is for reference onl
 | `dmHistoryLimit` | no | Maximum direct-message user turns to keep in agent context; 0 or unset keeps full session |
 
 All phone numbers use **E.164 format without the `whatsapp:` prefix** — the plugin prepends it internally when calling Twilio.
+
+For the permanent multi-WABA model, give every enabled account both `accountSid` and `authToken`. The two fields accept OpenClaw SecretRefs, including `env`, `file`, and `exec` providers. Use refs rather than plaintext so auth-token values stay out of `openclaw.json`.
+
+An account that sets only one account-scoped credential fails closed, even when the global compatibility variables exist. The global pair is used only when that account sets neither field.
 
 Group config keys are accepted only so shared OpenClaw configs can load cleanly. Twilio's WhatsApp Business API does not expose group chat webhooks, so inbound access control remains DM-only: `accounts.<id>.dmPolicy: "allowlist"` plus `accounts.<id>.allowFrom`.
 
@@ -97,11 +103,15 @@ Version 3 is a clean cutover. Legacy top-level `fromNumber`, `dmPolicy`, and `al
       "dmHistoryLimit": 2,
       "accounts": {
         "vinalia": {
+          "accountSid": { "source": "env", "provider": "default", "id": "TWILIO_VINALIA_ACCOUNT_SID" },
+          "authToken": { "source": "env", "provider": "default", "id": "TWILIO_VINALIA_AUTH_TOKEN" },
           "fromNumber": "+14845645168",
           "dmPolicy": "allowlist",
           "allowFrom": ["+14155551234"]
         },
         "mkps": {
+          "accountSid": { "source": "env", "provider": "default", "id": "TWILIO_MKPS_ACCOUNT_SID" },
+          "authToken": { "source": "env", "provider": "default", "id": "TWILIO_MKPS_AUTH_TOKEN" },
           "fromNumber": "+447427807929",
           "dmPolicy": "open",
           "allowFrom": ["*"]
@@ -118,12 +128,23 @@ Version 3 is a clean cutover. Legacy top-level `fromNumber`, `dmPolicy`, and `al
 
 Modern OpenClaw gateways key plugin config by the manifest id `twilio-whatsapp` (not the npm package name) in `plugins.allow` / `plugins.entries`. The legacy `plugins.load.paths` field is no longer used — plugin install paths are auto-discovered. See `AGENT_INSTRUCTIONS.md` for the exact `openclaw.json` shape.
 
-### Environment variables (secrets)
+### Credential modes
 
-| Variable | Required | Description |
+Account-scoped SecretRefs are the permanent model for gateways serving multiple Twilio accounts/WABAs. The referenced environment variables can use any valid names:
+
+```json
+"accountSid": { "source": "env", "provider": "default", "id": "TWILIO_MKPS_ACCOUNT_SID" },
+"authToken": { "source": "env", "provider": "default", "id": "TWILIO_MKPS_AUTH_TOKEN" }
+```
+
+The original global variables remain a compatibility mode for a gateway whose enabled accounts all belong to one Twilio account:
+
+| Variable | Required in compatibility mode | Description |
 |---|---|---|
-| `TWILIO_ACCOUNT_SID` | yes | Your Twilio account SID (starts with `AC`) |
-| `TWILIO_AUTH_TOKEN` | yes | Your Twilio auth token |
+| `TWILIO_ACCOUNT_SID` | yes | Shared Twilio account SID |
+| `TWILIO_AUTH_TOKEN` | yes | Shared Twilio auth token |
+
+Do not combine one account-scoped field with one global field. Credential pairs are atomic.
 
 ## Twilio setup
 
@@ -173,6 +194,7 @@ WhatsApp the number registered in `accounts.<id>.fromNumber`. The plugin routes 
 | Path | Auth | Purpose |
 |---|---|---|
 | `POST /webhook/twilio-whatsapp` | `plugin` (signature-validated) | Inbound from Twilio |
+| `POST /webhook/twilio-whatsapp/status` | `plugin` (signature-validated) | Delivery status callbacks |
 | `GET /webhook/twilio-whatsapp/media/*` | `plugin` | Serves outbound media for Twilio to fetch |
 | `GET /webhook/twilio-whatsapp/health` | `plugin` | Liveness check |
 
@@ -191,8 +213,8 @@ Outbound media (agent → Twilio):
 ### Inbound flow
 
 1. Twilio POSTs `application/x-www-form-urlencoded` body with `Body`, `From`, `MessageSid`, `NumMedia`, etc.
-2. Plugin validates `X-Twilio-Signature` against `webhookUrl + path` — rejects with `403` on mismatch
-3. Plugin matches Twilio `To` against `accounts.<id>.fromNumber` (with `whatsapp:` prefix stripped), then checks `From` against that account's `dmPolicy` / `allowFrom` — rejects with `403` if either check fails
+2. Plugin matches Twilio `To` against `accounts.<id>.fromNumber`; unknown recipients are rejected
+3. Plugin validates `X-Twilio-Signature` using only that account's auth token, then checks `From` against that account's `dmPolicy` / `allowFrom`
 4. Plugin **immediately** responds with empty TwiML (`<Response/>`) so Twilio doesn't time out
 5. If enabled, plugin sends a Twilio typing indicator for the inbound message
 6. Plugin downloads any inbound media (async, after responding)
@@ -249,7 +271,7 @@ npm link @srinathh/openclaw-channel-twilio-whatsapp
 - **DMs only** — no group chat (Twilio's WhatsApp Business API doesn't support groups). `groupPolicy`, `groupAllowFrom`, and `groups` are accepted as no-op compatibility keys only.
 - **No reactions** — WhatsApp reactions are not exposed through this plugin
 - **No threaded replies** — WhatsApp threading not exposed by Twilio
-- **Single Twilio credential set** — multiple WhatsApp senders are supported through `accounts`, but all accounts share `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN`.
+- **One credential pair per account** — each enabled account must use both account-scoped credentials, or neither so the global single-Twilio-account compatibility pair applies.
 
 ## License
 
