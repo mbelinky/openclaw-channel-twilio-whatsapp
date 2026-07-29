@@ -10,7 +10,7 @@ declare module 'openclaw/plugin-sdk/channel-core' {
     registerFull?: any;
   }): any;
 
-  export function defineSetupPluginEntry(params: any): any;
+  export function defineSetupPluginEntry<TPlugin>(plugin: TPlugin): { plugin: TPlugin };
 
   export function createChatChannelPlugin<TAccount = any>(params: {
     base: {

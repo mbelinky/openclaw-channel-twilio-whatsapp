@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {
+  applyResolvedAssignments,
+  createResolverContext,
+  resolveSecretRefValues,
+} from 'openclaw/plugin-sdk/secret-ref-runtime';
 import { resolveTwilioWhatsAppAccount, twilioWhatsAppPlugin } from '../dist/channel.js';
 import setupEntry from '../dist/setup-entry.js';
 
@@ -348,4 +353,63 @@ test('setup entry reports the incomplete account and exposes SecretRef targets',
       'channels.twilio-whatsapp.accounts.*.authToken',
     ],
   );
+});
+
+test('account env SecretRefs hydrate before account resolution', async () => {
+  const sourceConfig = {
+    channels: {
+      'twilio-whatsapp': {
+        enabled: true,
+        webhookUrl: 'https://twilio.example.test',
+        accounts: {
+          mkps: {
+            accountSid: {
+              source: 'env',
+              provider: 'default',
+              id: 'TWILIO_MKPS_ACCOUNT_SID',
+            },
+            authToken: {
+              source: 'env',
+              provider: 'default',
+              id: 'TWILIO_MKPS_AUTH_TOKEN',
+            },
+            dmPolicy: 'open',
+            allowFrom: ['*'],
+            fromNumber: '+14155550002',
+          },
+        },
+      },
+    },
+  };
+  const resolvedConfig = structuredClone(sourceConfig);
+  const context = createResolverContext({
+    sourceConfig,
+    env: {
+      TWILIO_MKPS_ACCOUNT_SID: 'AC-resolved-mkps',
+      TWILIO_MKPS_AUTH_TOKEN: 'resolved-mkps-token',
+    },
+  });
+
+  setupEntry.plugin.secrets.collectRuntimeConfigAssignments({
+    config: resolvedConfig,
+    defaults: undefined,
+    context,
+  });
+  const resolved = await resolveSecretRefValues(
+    context.assignments.map((assignment) => assignment.ref),
+    {
+      config: sourceConfig,
+      env: context.env,
+      cache: context.cache,
+    },
+  );
+  applyResolvedAssignments({ assignments: context.assignments, resolved });
+
+  const account = withoutTwilioEnv(() =>
+    resolveTwilioWhatsAppAccount(resolvedConfig, 'mkps'),
+  );
+  assert.equal(account.credentialSource, 'account');
+  assert.equal(account.accountSid, 'AC-resolved-mkps');
+  assert.equal(account.authToken, 'resolved-mkps-token');
+  assert.deepEqual(context.warnings, []);
 });
