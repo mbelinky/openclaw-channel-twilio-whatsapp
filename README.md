@@ -2,7 +2,7 @@
 
 This is the independently maintained, multi-account fork of
 [`@srinathh/openclaw-channel-twilio-whatsapp`](https://github.com/srinathh/openclaw-channel-twilio-whatsapp).
-It preserves the original Apache-2.0 license and the `twilio-whatsapp` plugin id, so existing OpenClaw bindings keep the same channel name.
+It preserves the original Apache-2.0 license and the `twilio-whatsapp` channel id, so existing channel configuration and bindings keep the same name. Its independent plugin install id is `twilio-whatsapp-multi-account`.
 
 > ⚠️ **Install via a coding agent, not via the standard OpenClaw install flow.**
 > This plugin is non-trivial to deploy: it requires a Twilio account, a public HTTPS URL, environment-variable secrets, exact webhook-URL matching, and gateway version `>= 2026.6.11`. The ClawHub one-click install will leave you with a half-configured plugin that silently 403s or 404s.
@@ -153,7 +153,7 @@ Upgrade checklist:
 }
 ```
 
-Modern OpenClaw gateways use the manifest id `twilio-whatsapp`, not the npm package name, in `plugins.allow` and `plugins.entries`. The legacy `plugins.load.paths` field is no longer used because installed plugins are discovered automatically. See `AGENT_INSTRUCTIONS.md` for the exact `openclaw.json` shape.
+Modern OpenClaw gateways use the manifest id `twilio-whatsapp-multi-account`, not the npm package name or channel id, in `plugins.allow` and `plugins.entries`. The legacy `plugins.load.paths` field is no longer used because installed plugins are discovered automatically. See `AGENT_INSTRUCTIONS.md` for the exact `openclaw.json` shape.
 
 ### Credential modes
 

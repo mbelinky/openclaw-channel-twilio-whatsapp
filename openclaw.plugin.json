@@ -1,9 +1,9 @@
 {
-  "id": "twilio-whatsapp",
+  "id": "twilio-whatsapp-multi-account",
   "kind": "channel",
   "name": "Twilio WhatsApp Channel",
   "description": "WhatsApp channel via Twilio Business API",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "channels": ["twilio-whatsapp"],
   "channelEnvVars": {
     "twilio-whatsapp": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]
@@ -315,7 +315,8 @@
           "label": "Processing Ack Delay",
           "help": "Delay before sending the interim processing message, in milliseconds."
         }
-      }
+      },
+      "preferOver": ["twilio-whatsapp"]
     }
   }
 }

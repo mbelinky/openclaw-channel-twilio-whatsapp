@@ -5,6 +5,12 @@ import test from 'node:test';
 const manifest = JSON.parse(fs.readFileSync(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
 const schema = manifest.channelConfigs['twilio-whatsapp'].schema;
 
+test('maintained fork keeps the channel id but uses its own plugin id', () => {
+  assert.equal(manifest.id, 'twilio-whatsapp-multi-account');
+  assert.deepEqual(manifest.channels, ['twilio-whatsapp']);
+  assert.deepEqual(manifest.channelConfigs['twilio-whatsapp'].preferOver, ['twilio-whatsapp']);
+});
+
 function jsonBlockAfter(fileName, heading) {
   const markdown = fs.readFileSync(new URL(`../${fileName}`, import.meta.url), 'utf8');
   const headingIndex = markdown.indexOf(heading);
@@ -184,8 +190,8 @@ test('agent installation example parses and matches the plugin schema', () => {
     example.bindings.map((binding) => binding.match?.accountId),
     Object.keys(channel.accounts),
   );
-  assert.ok(example.plugins.allow.includes('twilio-whatsapp'));
-  assert.equal(example.plugins.entries['twilio-whatsapp'].enabled, true);
+  assert.ok(example.plugins.allow.includes('twilio-whatsapp-multi-account'));
+  assert.equal(example.plugins.entries['twilio-whatsapp-multi-account'].enabled, true);
 });
 
 test('channel schema rejects legacy top-level sender config keys', () => {
