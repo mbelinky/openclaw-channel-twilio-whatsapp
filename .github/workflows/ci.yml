@@ -1,0 +1,41 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: OpenClaw ${{ matrix.openclaw }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - openclaw: "minimum (2026.6.11)"
+            package: "2026.6.11"
+            node: "22.19.0"
+          - openclaw: "latest (2026.7.1-2)"
+            package: "2026.7.1-2"
+            node: "24.15.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - if: matrix.package != '2026.7.1-2'
+        run: npm install --no-save --package-lock=false openclaw@${{ matrix.package }}
+      - run: npm test
+      - run: >-
+          npm exec --yes @openclaw/plugin-inspector@0.3.21 --
+          check --plugin-root . --openclaw node_modules/openclaw
+          --runtime --real-sdk --allow-execute --author-facing --json
+          --out "${RUNNER_TEMP}/plugin-inspector"
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm pack --dry-run

@@ -1,7 +1,10 @@
-import { createPluginRuntimeStore } from 'openclaw/plugin-sdk/runtime-store';
+import {
+  createPluginRuntimeStore,
+  type PluginRuntime,
+} from 'openclaw/plugin-sdk/runtime-store';
 
 export const { setRuntime: setTwilioWhatsAppRuntime, getRuntime: getTwilioWhatsAppRuntime } =
-  createPluginRuntimeStore({
+  createPluginRuntimeStore<PluginRuntime>({
     pluginId: 'twilio-whatsapp',
     errorMessage: 'Twilio WhatsApp runtime not initialized',
   });
