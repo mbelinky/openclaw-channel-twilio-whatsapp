@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.2
+
+- Publish the compiled runtime in the ClawHub artifact. The v3.0.1 ClawHub artifact was withdrawn before any installs because its GitHub-source build contained documentation and metadata but no `dist` files.
+
 ## 3.0.1
 
 - Give the maintained fork its own ClawHub plugin install id while preserving the existing `twilio-whatsapp` channel id and configuration path.

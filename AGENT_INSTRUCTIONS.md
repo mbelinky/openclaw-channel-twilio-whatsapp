@@ -14,7 +14,7 @@ If you're not sure which the user wants, ask before proceeding.
 Confirm all of these before starting. If any is missing, stop and explain what's needed.
 
 1. **A running OpenClaw gateway, version `>= 2026.6.11`.** Earlier 2026.x gateways do not have the account-scoped channel-binding behavior this plugin needs for multi-sender deployments.
-2. **Plugin version `>= 3.0.1` (install `@latest`).** Version 3 is a clean cutover to account-scoped sender config. Legacy top-level `fromNumber`, `dmPolicy`, and `allowFrom` are invalid.
+2. **Plugin version `>= 3.0.2` (install `@latest`).** Version 3 is a clean cutover to account-scoped sender config. Legacy top-level `fromNumber`, `dmPolicy`, and `allowFrom` are invalid.
 3. **A Twilio account** with WhatsApp enabled, either the Sandbox for development or a registered WhatsApp sender for production. https://console.twilio.com
 4. **A public HTTPS URL** that routes inbound traffic to the OpenClaw gateway. Twilio's CDN must be able to reach this URL anonymously. Acceptable: cloudflared/ngrok tunnel, public reverse proxy, k8s ingress. NOT acceptable: localhost, private IPs, self-signed certs.
 5. **The user's phone number(s)** in E.164 format (e.g. `+14155550123`). These will be the allowlist.
@@ -183,7 +183,7 @@ Run these in order. Stop and debug at the first failure.
 
 2. **Inbound test:** from an allowed phone number, WhatsApp each configured `accounts.<id>.fromNumber`. The plugin routes by Twilio `To`, and the bound account's agent should reply.
 
-3. **Outbound media test:** ask the agent to send the user a file or image. The recipient should see the attachment, not just text. If text arrives and the image doesn't, re-check gateway version (`>= 2026.6.11`) and plugin version (`>= 3.0.1`).
+3. **Outbound media test:** ask the agent to send the user a file or image. The recipient should see the attachment, not just text. If text arrives and the image doesn't, re-check gateway version (`>= 2026.6.11`) and plugin version (`>= 3.0.2`).
 
 ## Common failure modes
 
@@ -199,7 +199,7 @@ Run these in order. Stop and debug at the first failure.
 | One sender gets signature failures after multi-account setup | Its `To` number is mapped to an account whose auth token belongs to another Twilio account | Fix that account's credential refs; inbound signatures are validated only with the matched account token |
 | Inbound messages get 403 only from one user number | Number not in that account's `allowFrom`, or has `whatsapp:` prefix in config | Add as E.164 without prefix under the right account |
 | Inbound messages get 403 for one Twilio sender | Twilio `To` does not match any `accounts.<id>.fromNumber` | Add or fix the account's E.164 sender number |
-| Text replies arrive but images don't | Old gateway/plugin or media route issue | Upgrade to gateway `>= 2026.6.11` and plugin `>= 3.0.1` |
+| Text replies arrive but images don't | Old gateway/plugin or media route issue | Upgrade to gateway `>= 2026.6.11` and plugin `>= 3.0.2` |
 | Twilio error 21617 in logs | Outbound message > 1600 chars on plugin `< 2.1.4` | Upgrade plugin (`@latest` covers this) |
 
 ## What this plugin does NOT do
