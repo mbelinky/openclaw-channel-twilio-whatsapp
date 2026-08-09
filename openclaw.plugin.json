@@ -5,9 +5,6 @@
   "description": "WhatsApp channel via Twilio Business API",
   "version": "3.0.2",
   "channels": ["twilio-whatsapp"],
-  "channelEnvVars": {
-    "twilio-whatsapp": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]
-  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
