@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.3
+
+- Remove deprecated channel environment metadata now covered by the setup entry and account credential schema, clearing the ClawHub validation warning.
+
 ## 3.0.2
 
 - Publish the compiled runtime in the ClawHub artifact. The v3.0.1 ClawHub artifact was withdrawn before any installs because its GitHub-source build contained documentation and metadata but no `dist` files.

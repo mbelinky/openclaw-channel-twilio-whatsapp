@@ -3,7 +3,7 @@
   "kind": "channel",
   "name": "Twilio WhatsApp Channel",
   "description": "WhatsApp channel via Twilio Business API",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "channels": ["twilio-whatsapp"],
   "configSchema": {
     "type": "object",

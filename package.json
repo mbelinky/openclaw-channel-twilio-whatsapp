@@ -1,6 +1,6 @@
 {
   "name": "@mbelinky/openclaw-channel-twilio-whatsapp",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "license": "Apache-2.0",
   "description": "Maintained multi-account Twilio WhatsApp channel plugin for OpenClaw",
   "author": "Mariano Belinky",
