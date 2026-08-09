@@ -1,4 +1,4 @@
-# Agent Instructions: Installing `@srinathh/openclaw-channel-twilio-whatsapp`
+# Agent Instructions: Installing `@mbelinky/openclaw-channel-twilio-whatsapp`
 
 You are an AI agent helping a user install this plugin into their OpenClaw deployment. This document tells you exactly what to do, what to ask, and what not to assume. The setup has several parts: plugin install, OpenClaw config, secrets, Twilio console setup, and a public URL. Work through them in order.
 
@@ -49,7 +49,7 @@ docker run --rm \
   --user 1000:1000 \
   -e HOME=/home/node \
   ghcr.io/openclaw/openclaw:<version> \
-  node openclaw.mjs plugins install @srinathh/openclaw-channel-twilio-whatsapp@latest --force
+  node openclaw.mjs plugins install @mbelinky/openclaw-channel-twilio-whatsapp@latest --force
 ```
 
 Check these details because mistakes here can make the install fail:
@@ -66,7 +66,7 @@ Only use this if the gateway is already running directly on a host (no container
 
 ```bash
 HOME=<gateway home> node <gateway-install>/openclaw.mjs plugins install \
-  @srinathh/openclaw-channel-twilio-whatsapp@latest --force
+  @mbelinky/openclaw-channel-twilio-whatsapp@latest --force
 ```
 
 ### Kubernetes (operator-based deployment)
@@ -76,7 +76,7 @@ If the user runs the OpenClaw operator, plugins are declared in the `OpenClawIns
 ```yaml
 spec:
   plugins:
-    - "@srinathh/openclaw-channel-twilio-whatsapp@latest"
+    - "@mbelinky/openclaw-channel-twilio-whatsapp@latest"
 ```
 
 The operator handles the install. The exact CRD shape depends on the operator version, so check the operator's own docs if this fails. Do not run `npm install` inside the pod.
@@ -123,7 +123,7 @@ Merge this into the user's existing `openclaw.json` (don't overwrite the whole f
 }
 ```
 
-**Critical: use the manifest id `twilio-whatsapp`, NOT the npm package name `@srinathh/openclaw-channel-twilio-whatsapp`, in `plugins.allow` and `plugins.entries`.**
+**Critical: use the manifest id `twilio-whatsapp`, NOT the npm package name `@mbelinky/openclaw-channel-twilio-whatsapp`, in `plugins.allow` and `plugins.entries`.**
 
 Modern OpenClaw gateways (2026.x) key plugin config by the manifest id from `openclaw.plugin.json`, not the npm package name. Using the package name causes a warning. The legacy `plugins.load.paths` field is also gone because the gateway discovers installed plugins under `~/.openclaw/npm/node_modules/`. A missing path in `plugins.load.paths` makes the gateway refuse to start with `Invalid config: plugins.load.paths: plugin path not found`.
 
@@ -217,7 +217,8 @@ Twilio bills per WhatsApp message. Pricing varies by destination country and con
 
 ## References
 
-- npm: https://www.npmjs.com/package/@srinathh/openclaw-channel-twilio-whatsapp
-- GitHub: https://github.com/srinathh/openclaw-channel-twilio-whatsapp
+- npm: https://www.npmjs.com/package/@mbelinky/openclaw-channel-twilio-whatsapp
+- GitHub: https://github.com/mbelinky/openclaw-channel-twilio-whatsapp
+- Original project: https://github.com/srinathh/openclaw-channel-twilio-whatsapp
 - Plugin config schema: `openclaw.plugin.json` in this repo
 - Full user-facing docs: `README.md` in this repo

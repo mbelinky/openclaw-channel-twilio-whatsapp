@@ -1,5 +1,9 @@
 # OpenClaw Twilio WhatsApp Channel
 
+This is the independently maintained, multi-account fork of
+[`@srinathh/openclaw-channel-twilio-whatsapp`](https://github.com/srinathh/openclaw-channel-twilio-whatsapp).
+It preserves the original Apache-2.0 license and the `twilio-whatsapp` plugin id, so existing OpenClaw bindings keep the same channel name.
+
 > ⚠️ **Install via a coding agent, not via the standard OpenClaw install flow.**
 > This plugin is non-trivial to deploy: it requires a Twilio account, a public HTTPS URL, environment-variable secrets, exact webhook-URL matching, and gateway version `>= 2026.6.11`. The ClawHub one-click install will leave you with a half-configured plugin that silently 403s or 404s.
 >
@@ -7,7 +11,7 @@
 
 A channel plugin for [OpenClaw](https://openclaw.rocks) that connects your AI agent to WhatsApp via the [Twilio Business API](https://www.twilio.com/docs/whatsapp).
 
-[![npm version](https://img.shields.io/npm/v/@srinathh/openclaw-channel-twilio-whatsapp.svg)](https://www.npmjs.com/package/@srinathh/openclaw-channel-twilio-whatsapp)
+[![npm version](https://img.shields.io/npm/v/@mbelinky/openclaw-channel-twilio-whatsapp.svg)](https://www.npmjs.com/package/@mbelinky/openclaw-channel-twilio-whatsapp)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 ## What version 3 changes
@@ -247,7 +251,7 @@ Outbound media (agent → Twilio):
 ## Development
 
 ```bash
-git clone https://github.com/srinathh/openclaw-channel-twilio-whatsapp.git
+git clone https://github.com/mbelinky/openclaw-channel-twilio-whatsapp.git
 cd openclaw-channel-twilio-whatsapp
 npm install
 npm run build
@@ -281,7 +285,7 @@ npm run build
 npm link
 
 # 2. In your OpenClaw instance directory
-npm link @srinathh/openclaw-channel-twilio-whatsapp
+npm link @mbelinky/openclaw-channel-twilio-whatsapp
 
 # 3. Add to your openclaw.json plugins config (see Configuration)
 # 4. Use a tunnel (cloudflared, ngrok) to expose the gateway
@@ -292,7 +296,7 @@ npm link @srinathh/openclaw-channel-twilio-whatsapp
 
 - **OpenClaw gateway**: targets `>= 2026.6.11` for account-scoped channel bindings. Earlier 2026.x gateways can fail to load the plugin or route multi-account inbound messages incorrectly.
 - **OpenClaw operator** (k8s): requires v0.30.0+ for the plugin peerDependency symlink
-- **Node.js**: 20+
+- **Node.js**: 22.19+
 
 ## Known limitations
 
@@ -304,8 +308,10 @@ npm link @srinathh/openclaw-channel-twilio-whatsapp
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE). The original adapter was created by
+[`srinathh`](https://github.com/srinathh); this fork is maintained by
+[`mbelinky`](https://github.com/mbelinky).
 
 ## Contributing
 
-Issues and PRs welcome at [github.com/srinathh/openclaw-channel-twilio-whatsapp](https://github.com/srinathh/openclaw-channel-twilio-whatsapp).
+Issues and PRs welcome at [github.com/mbelinky/openclaw-channel-twilio-whatsapp](https://github.com/mbelinky/openclaw-channel-twilio-whatsapp).

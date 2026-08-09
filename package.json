@@ -1,17 +1,20 @@
 {
-  "name": "@srinathh/openclaw-channel-twilio-whatsapp",
+  "name": "@mbelinky/openclaw-channel-twilio-whatsapp",
   "version": "3.0.0",
   "license": "Apache-2.0",
-  "description": "Twilio WhatsApp channel plugin for OpenClaw",
-  "author": "srinathh",
+  "description": "Maintained multi-account Twilio WhatsApp channel plugin for OpenClaw",
+  "author": "Mariano Belinky",
+  "contributors": [
+    "srinathh (original author)"
+  ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/srinathh/openclaw-channel-twilio-whatsapp.git"
+    "url": "git+https://github.com/mbelinky/openclaw-channel-twilio-whatsapp.git"
   },
   "bugs": {
-    "url": "https://github.com/srinathh/openclaw-channel-twilio-whatsapp/issues"
+    "url": "https://github.com/mbelinky/openclaw-channel-twilio-whatsapp/issues"
   },
-  "homepage": "https://github.com/srinathh/openclaw-channel-twilio-whatsapp#readme",
+  "homepage": "https://github.com/mbelinky/openclaw-channel-twilio-whatsapp#readme",
   "type": "module",
   "main": "dist/index.js",
   "openclaw": {
@@ -33,8 +36,8 @@
       "quickstartAllowFrom": true
     },
     "install": {
-      "clawhubSpec": "clawhub:@srinathh/openclaw-channel-twilio-whatsapp",
-      "npmSpec": "@srinathh/openclaw-channel-twilio-whatsapp",
+      "clawhubSpec": "clawhub:@mbelinky/openclaw-channel-twilio-whatsapp",
+      "npmSpec": "@mbelinky/openclaw-channel-twilio-whatsapp",
       "defaultChoice": "clawhub",
       "minHostVersion": ">=2026.6.11"
     },
@@ -53,7 +56,9 @@
   },
   "files": [
     "dist",
-    "openclaw.plugin.json"
+    "openclaw.plugin.json",
+    "AGENT_INSTRUCTIONS.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=22.19.0"
